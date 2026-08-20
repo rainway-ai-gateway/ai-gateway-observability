@@ -4,7 +4,7 @@ datasources:
   - name: Doris
     type: mysql
     access: proxy
-    url: 172.18.1.244:9030
+    url: 127.0.0.1:9030
     database: bfe_observability
     user: root
     secureJsonData:
