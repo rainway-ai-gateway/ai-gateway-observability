@@ -1,0 +1,39 @@
+{
+    "logid": 8877700219231856663,
+    "timestamp": 1782353293,
+    "product": "AI_product",
+    "hostid": "bfe-node01_4026532708",
+    "client_ip": "10.0.0.1",
+    "req_header_len": 189,
+    "proto": "HTTP/1.1",
+    "header_host": "ai.example.org",
+    "origin_uri": "/v1/chat/completions",
+    "method": "POST",
+    "content_type": "application/json",
+    "authorization": "Bearer sk-xxx",
+    "cluster": "ai_cluster_example",
+    "sub_cluster": "ai.pool.bj",
+    "res_status_code": 429,
+    "res_header_len": 137,
+    "res_body_len": 103,
+    "res_content_type": "application/json",
+    "all_time": 4,
+    "proxy_delay_time": 3,
+    "err_code": "AI_RATE_LIMIT",
+    "ai_apikey": "YOURAPIKEY",
+    "ai_apikeytags": [
+        {"tagname": "dep", "tagvalue": "op"},
+        {"tagname": "team", "tagvalue": "bfe"}
+    ],
+    "ai_requested_model": "test-model",
+    "ai_mapped_model": "gpt-5",
+    "ai_prompt_tokens": 61,
+    "ai_output_tokens": -1,
+    "ai_rate_limit_hits": [
+        {
+            "rate_limit_policy_id": "rlp-0002",
+            "rate_limit_type": "tpm",
+            "rule_names": ["tpm1"]
+        }
+    ]
+}
