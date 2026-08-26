@@ -1,6 +1,6 @@
 # BFE AI Gateway 可观测 — Grafana Dashboard 设计文档
 
-本文档描述 `bfe-ai-gateway-observability` 看板的设计，作为 `dashboards/bfe-ai-gateway-observability.json` 的实现依据。字段语义以 [Doris 表设计说明](../doris/TABLE_DESIGN.md) 为准。
+本文档描述 `bfe-ai-gateway-observability` 看板的设计，作为 `dashboards/bfe-ai-gateway-observability.json` 的实现依据。字段语义以 [Doris 表设计说明](../../doris/docs/design/TABLE_DESIGN.md) 为准。
 
 ---
 

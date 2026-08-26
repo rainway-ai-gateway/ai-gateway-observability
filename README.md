@@ -30,25 +30,31 @@ ai-gateway-observability/
 │   ├── cleanup.sh                     # 清空脚本（删表/Routine Load/Job）
 │   ├── setup.conf                     # 生产配置（库 bfe_observability）
 │   ├── setup_test.conf                # 测试配置（库 bfe_observability_test）
-│   ├── HOWTO.md                       # Doris 部署指南
-│   ├── TABLE_DESIGN.md                # 表设计说明
 │   ├── sqls/                          # DDL/DML SQL
 │   │   ├── bfe_observability.sql      #   建库
 │   │   ├── bfe_ai_request_log.sql     #   明细表
 │   │   ├── bfe_ai_metrics_1m.sql      #   聚合表
 │   │   ├── bfe_ai_log_load_routine.sql#   Routine Load
 │   │   └── bfe_ai_metrics_1m_job.sql  #   INSERT JOB
-│   └── demo/                          # 演示 JSON 样例
+│   ├── demo/                          # 演示 JSON 样例
+│   └── docs/                          # 文档
+│       ├── user/HOWTO.md              #   Doris 部署指南
+│       ├── design/TABLE_DESIGN.md     #   表设计说明
+│       └── modification/              #   变更记录
+│           └── 20260826update2newPb.md#   升级到新 PB 字段变更
 ├── grafana/
 │   ├── setup.sh                       # 一键配置（数据源 + Dashboard + 重启）
 │   ├── setup.conf                     # 生产配置
 │   ├── setup_test.conf                # 测试配置
-│   ├── HOWTO.md                       # Grafana 配置指南
-│   ├── DASHBOARD_DESIGN.md            # Dashboard 设计文档
 │   ├── datasources/
 │   │   └── doris.yaml                 # Doris 数据源模板
-│   └── dashboards/
-│       └── bfe-ai-gateway-observability.json  # Dashboard 配置
+│   ├── dashboards/
+│   │   └── bfe-ai-gateway-observability.json  # Dashboard 配置
+│   └── docs/                          # 文档
+│       ├── user/HOWTO.md              #   Grafana 配置指南
+│       ├── design/DASHBOARD_DESIGN.md #   Dashboard 设计文档
+│       └── modification/              #   变更记录
+│           └── 20260826update2newPb.md#   升级到新 PB 字段变更
 └── LICENSE
 ```
 
@@ -73,7 +79,7 @@ bash setup.sh ./setup_test.conf
 bash cleanup.sh ./setup_test.conf    # 或 bash cleanup.sh
 ```
 
-详细步骤见 [doris/HOWTO.md](./doris/HOWTO.md)，表结构与字段语义见 [doris/TABLE_DESIGN.md](./doris/TABLE_DESIGN.md)。
+详细步骤见 [doris/docs/user/HOWTO.md](./doris/docs/user/HOWTO.md)，表结构与字段语义见 [doris/docs/design/TABLE_DESIGN.md](./doris/docs/design/TABLE_DESIGN.md)。
 
 ### 2. 部署 Grafana 侧（数据源 + Dashboard）
 
@@ -88,7 +94,7 @@ bash setup.sh
 bash setup.sh ./setup_test.conf
 ```
 
-脚本会写入 Doris 数据源、导入 Dashboard 并重启 Grafana。详细步骤见 [grafana/HOWTO.md](./grafana/HOWTO.md)，Dashboard 面板与 SQL 见 [grafana/DASHBOARD_DESIGN.md](./grafana/DASHBOARD_DESIGN.md)。
+脚本会写入 Doris 数据源、导入 Dashboard 并重启 Grafana。详细步骤见 [grafana/docs/user/HOWTO.md](./grafana/docs/user/HOWTO.md)，Dashboard 面板与 SQL 见 [grafana/docs/design/DASHBOARD_DESIGN.md](./grafana/docs/design/DASHBOARD_DESIGN.md)。
 
 ## 核心设计
 
@@ -99,17 +105,19 @@ bash setup.sh ./setup_test.conf
 
 | 组件 | 说明 | 指南 |
 |------|------|------|
-| Doris | 建库、明细表、聚合表、Routine Load、INSERT JOB | [doris/HOWTO.md](./doris/HOWTO.md) |
-| Grafana | Doris 数据源、BFE AI Gateway Dashboard | [grafana/HOWTO.md](./grafana/HOWTO.md) |
+| Doris | 建库、明细表、聚合表、Routine Load、INSERT JOB | [doris/docs/user/HOWTO.md](./doris/docs/user/HOWTO.md) |
+| Grafana | Doris 数据源、BFE AI Gateway Dashboard | [grafana/docs/user/HOWTO.md](./grafana/docs/user/HOWTO.md) |
 
 ## 文档索引
 
 | 文档 | 内容 |
 |------|------|
-| [doris/HOWTO.md](./doris/HOWTO.md) | Doris 部署与验证步骤 |
-| [doris/TABLE_DESIGN.md](./doris/TABLE_DESIGN.md) | 两张表的结构、字段语义、Grafana 查询指南 |
-| [grafana/HOWTO.md](./grafana/HOWTO.md) | Grafana 数据源 + Dashboard 配置步骤 |
-| [grafana/DASHBOARD_DESIGN.md](./grafana/DASHBOARD_DESIGN.md) | Dashboard 面板布局与 SQL |
+| [doris/docs/user/HOWTO.md](./doris/docs/user/HOWTO.md) | Doris 部署与验证步骤 |
+| [doris/docs/design/TABLE_DESIGN.md](./doris/docs/design/TABLE_DESIGN.md) | 两张表的结构、字段语义、Grafana 查询指南 |
+| [doris/docs/modification/20260826update2newPb.md](./doris/docs/modification/20260826update2newPb.md) | 升级到新 PB 的字段变更记录 |
+| [grafana/docs/user/HOWTO.md](./grafana/docs/user/HOWTO.md) | Grafana 数据源 + Dashboard 配置步骤 |
+| [grafana/docs/design/DASHBOARD_DESIGN.md](./grafana/docs/design/DASHBOARD_DESIGN.md) | Dashboard 面板布局与 SQL |
+| [grafana/docs/modification/20260826update2newPb.md](./grafana/docs/modification/20260826update2newPb.md) | 升级到新 PB 的 Dashboard 变更记录 |
 
 ## License
 

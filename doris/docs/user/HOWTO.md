@@ -32,17 +32,23 @@ doris/
 ├── cleanup.sh                        # 清空脚本（删表 / Routine Load / Job）
 ├── setup.conf                        # 配置文件（生产，数据库 bfe_observability）
 ├── setup_test.conf                   # 配置文件（测试，数据库 bfe_observability_test）
-├── HOWTO.md                          # 本文档
 ├── sqls/                             # DDL/DML SQL 文件（由脚本自动执行）
 │   ├── bfe_observability.sql         # 创建数据库
 │   ├── bfe_ai_request_log.sql        # 明细表
 │   ├── bfe_ai_metrics_1m.sql         # 聚合表
 │   ├── bfe_ai_log_load_routine.sql   # Routine Load（Kafka → Doris）
 │   └── bfe_ai_metrics_1m_job.sql     # INSERT JOB（明细表 → 聚合表）
-└── demo/                             # 演示用 JSON 消息样例
-    ├── normal_request.json           # 正常 AI 请求
-    ├── rate_limit.json               # 限流命中请求
-    └── auth_reject.json              # 认证拒绝请求
+├── demo/                             # 演示用 JSON 消息样例
+│   ├── normal_request.json           # 正常 AI 请求
+│   ├── rate_limit.json               # 限流命中请求
+│   └── auth_reject.json              # 认证拒绝请求
+└── docs/
+    ├── user/
+    │   └── HOWTO.md                  # 本文档（Doris 部署指南）
+    ├── design/
+    │   └── TABLE_DESIGN.md           # 表设计说明
+    └── modification/
+        └── 20260826update2newPb.md   # 升级到新 PB 的字段变更记录
 ```
 
 ## 3. 配置
@@ -172,17 +178,17 @@ LIMIT 10;
 
 ### 6.2. 正常 AI 请求
 
-参考  [正常 AI 请求示例](./demo/normal_request.json)
+参考  [正常 AI 请求示例](../../demo/normal_request.json)
 
 
 ### 6.3. 限流命中请求
 
-参考  [限流命中请求](./demo/rate_limit.json)
+参考  [限流命中请求](../../demo/rate_limit.json)
 
 
 ### 6.4. 认证拒绝请求
 
-参考  [认证拒绝请求](./demo/auth_reject.json)
+参考  [认证拒绝请求](../../demo/auth_reject.json)
 
 
 > **零值字段**：Kafka 消息中零值字段不会被 LogReader 输出（Go `omitempty`），Doris 中对应列自动填充 NULL。
@@ -199,7 +205,7 @@ LIMIT 10;
 
 ## 8. 下一步：Grafana 集成
 
-Doris 对象创建完成后，在 Grafana 中添加 **MySQL 数据源**连接 Doris FE（端口 9030），即可构建 Dashboard 看板。详细的 Grafana 面板 SQL 和告警配置见 [Grafna打通指南](./../grafana/../README.md)。
+Doris 对象创建完成后，在 Grafana 中添加 **MySQL 数据源**连接 Doris FE（端口 9030），即可构建 Dashboard 看板。详细的 Grafana 面板 SQL 和告警配置见 [Grafna打通指南](../../../README.md)。
 
 ## 9. 重要提示：聚合表设计
 
@@ -218,6 +224,6 @@ Doris 对象创建完成后，在 Grafana 中添加 **MySQL 数据源**连接 Do
 | 2026-08-24 | v1.4 | 数据库名参数化：新增 `DORIS_DATABASE` 配置项，`setup.sh` 执行时将 SQL 中的 `bfe_observability` 替换为配置值；新增测试配置 `setup_test.conf`（数据库 `bfe_observability_test`） |
 | 2026-08-24 | v1.3 | 明细表补齐 log-reader 中已注册但未配置输出的 18 个字段（`log_tag`、`client_network`、`req_num`、`session_id`、`referrer`、`user_agent`、`delegation`、`uid`、`cookie`、`req_headers`、`res_location`、`res_transfer_encoding`、`res_headers`、`session_offset_time`、`bfe_ip`、`sock_src_ip`、`vip`、`vip6`），并同步 Routine Load 与 demo 样例 |
 | 2026-08-24 | v1.2 | 1) 新增 `ai_cache_read_tokens`、`ai_cache_write_tokens` 两个字段（明细表 + 聚合表 + Routine Load）；2) log-reader 取消 `omitempty`，零值字段也会输出，demo 样例更新为全字段格式 |
-| 2026-08-21 | v1.1 | `ai_apikeytags` 由数组格式改为对象格式 (level1~level5)，明细表/聚合表中改为 `level1Name`~`level5` 固定列，支持按层级精确对齐。详见 [设计文档](../20260821v1.1.md) |
+| 2026-08-21 | v1.1 | `ai_apikeytags` 由数组格式改为对象格式 (level1~level5)，明细表/聚合表中改为 `level1Name`~`level5` 固定列，支持按层级精确对齐。详见 [设计文档](../../../20260821v1.1.md) |
 | 2026-08-20 | v1.0 | 初始版本：明细表 + 聚合表 + Routine Load + INSERT JOB 一键部署脚本 |
 

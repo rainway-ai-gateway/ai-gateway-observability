@@ -26,11 +26,18 @@
 grafana/
 ├── setup.sh                          # 一键配置脚本
 ├── setup.conf                        # 配置文件（按需修改）
-├── HOWTO.md                          # 本文档
+├── setup_test.conf                   # 测试配置文件
 ├── datasources/
 │   └── doris.yaml                    # 数据源模板（供参考）
-└── dashboards/
-    └── bfe-ai-gateway-observability.json  # Dashboard JSON（供参考，脚本会拷贝）
+├── dashboards/
+│   └── bfe-ai-gateway-observability.json  # Dashboard JSON（供参考，脚本会拷贝）
+└── docs/
+    ├── user/
+    │   └── HOWTO.md                  # 本文档（Grafana 配置指南）
+    ├── design/
+    │   └── DASHBOARD_DESIGN.md       # Dashboard 设计文档
+    └── modification/
+        └── 20260826update2newPb.md   # 升级到新 PB 的变更记录
 ```
 
 ## 4. 配置
