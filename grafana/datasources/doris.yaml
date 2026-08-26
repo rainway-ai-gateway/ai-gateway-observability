@@ -1,14 +1,15 @@
 apiVersion: 1
 
 datasources:
-  - name: Doris
+  - name: ${DATASOURCE_NAME}
+    uid: ${DATASOURCE_UID}
     type: mysql
     access: proxy
-    url: 127.0.0.1:9030
-    database: bfe_observability
-    user: root
+    url: ${DORIS_HOST}:${DORIS_PORT}
+    database: ${DORIS_DATABASE}
+    user: ${DORIS_USER}
     secureJsonData:
-      password: 
+      password: ${DORIS_PASSWORD}
     jsonData:
       maxOpenConns: 10
       maxIdleConns: 10
