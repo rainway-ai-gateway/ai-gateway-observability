@@ -1,4 +1,4 @@
-
+USE ${DORIS_DATABASE};
 
 CREATE ROUTINE LOAD bfe_ai_log_load ON bfe_ai_request_log
 COLUMNS(
@@ -6,9 +6,17 @@ COLUMNS(
     timestamp,
     log_time         = FROM_UNIXTIME(timestamp),
     product,
+    log_tag,
     hostid,
     client_ip,
+    client_network,
     is_trust_src_ip,
+    req_num,
+    session_id,
+    bfe_ip,
+    sock_src_ip,
+    vip,
+    vip6,
     err_code,
     err_msg,
     req_header_len,
@@ -23,6 +31,12 @@ COLUMNS(
     accept_language,
     authorization,
     transfer_encoding,
+    referrer,
+    user_agent,
+    delegation,
+    uid,
+    cookie,
+    req_headers,
     cluster,
     sub_cluster,
     backend_info,
@@ -31,6 +45,9 @@ COLUMNS(
     res_header_len,
     res_body_len,
     res_content_type,
+    res_location,
+    res_transfer_encoding,
+    res_headers,
     all_time,
     read_client_time,
     cluster_serve_time,
@@ -38,19 +55,44 @@ COLUMNS(
     write_client_time,
     connect_backend_time,
     proxy_delay_time,
-    ai_apikey,
+    session_offset_time,
+    ai_apikey_id,
     ai_apikeytags,
+    level1Name       = json_unquote(json_extract(ai_apikeytags, '$.level1.tagname')),
+    level1           = json_unquote(json_extract(ai_apikeytags, '$.level1.tagvalue')),
+    level2Name       = json_unquote(json_extract(ai_apikeytags, '$.level2.tagname')),
+    level2           = json_unquote(json_extract(ai_apikeytags, '$.level2.tagvalue')),
+    level3Name       = json_unquote(json_extract(ai_apikeytags, '$.level3.tagname')),
+    level3           = json_unquote(json_extract(ai_apikeytags, '$.level3.tagvalue')),
+    level4Name       = json_unquote(json_extract(ai_apikeytags, '$.level4.tagname')),
+    level4           = json_unquote(json_extract(ai_apikeytags, '$.level4.tagvalue')),
+    level5Name       = json_unquote(json_extract(ai_apikeytags, '$.level5.tagname')),
+    level5           = json_unquote(json_extract(ai_apikeytags, '$.level5.tagvalue')),
     ai_requested_model,
-    ai_mapped_model,
+    ai_target_model,
     ai_stream,
-    ai_prompt_tokens,
+    ai_input_tokens,
     ai_output_tokens,
     ai_total_tokens,
+    ai_cache_read_tokens,
+    ai_cache_write_tokens,
+    ai_audio_input_tokens,
+    ai_audio_output_tokens,
+    ai_image_count,
     ai_ttft_us,
     ai_tpot_us,
+    ai_provider,
+    ai_protocol,
+    ai_mode,
+    ai_retry_count,
+    ai_cost_value,
+    ai_cost_currency,
+    ai_route_rule_hits,
+    ai_cluster_key_names,
     ai_rate_limit_hits,
     ai_auth_reject_reason,
-    ai_auth_reject_quota_plans
+    ai_auth_reject_quota_plans,
+    ai_auth_hit_quota_plans
 )
 PROPERTIES (
     "desired_concurrent_number" = "3",
@@ -60,8 +102,8 @@ PROPERTIES (
     "format" = "json"
 )
 FROM KAFKA (
-    "kafka_broker_list" = "172.18.1.244:9092",
-    "kafka_topic" = "bfe_ai_log",
-    "property.group.id" = "doris_bfe_ai_log",
-    "property.client.id" = "doris_bfe_ai_log"
+    "kafka_broker_list" = "${KAFKA_BROKER_LIST}",
+    "kafka_topic" = "${KAFKA_TOPIC}",
+    "property.group.id" = "${KAFKA_GROUP_ID}",
+    "property.client.id" = "${KAFKA_CLIENT_ID}"
 );
