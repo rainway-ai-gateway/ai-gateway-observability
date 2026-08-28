@@ -924,7 +924,7 @@
     "list": [
       {
         "current": { "selected": true, "text": "*", "value": "*" },
-        "hide": 0,
+        "hide": 2,
         "includeAll": true,
         "allValue": "*",
         "label": "模型",
@@ -941,7 +941,7 @@
       },
       {
         "current": { "selected": true, "text": "*", "value": "*" },
-        "hide": 0,
+        "hide": 2,
         "includeAll": true,
         "allValue": "*",
         "label": "API Key",
@@ -958,7 +958,7 @@
       },
       {
         "current": { "selected": true, "text": "*", "value": "*" },
-        "hide": 0,
+        "hide": 2,
         "includeAll": true,
         "allValue": "*",
         "label": "提供商",
@@ -975,7 +975,7 @@
       },
       {
         "current": { "selected": true, "text": "*", "value": "*" },
-        "hide": 0,
+        "hide": 2,
         "includeAll": true,
         "allValue": "*",
         "label": "Host",
@@ -992,7 +992,7 @@
       },
       {
         "current": { "selected": false, "text": "", "value": "" },
-        "hide": 0,
+        "hide": 2,
         "label": "URI",
         "name": "uri",
         "skipUrlSync": false,
