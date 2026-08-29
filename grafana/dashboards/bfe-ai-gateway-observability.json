@@ -754,12 +754,13 @@
           "datasource": { "type": "mysql", "uid": "${DS_DORIS}" },
           "editorMode": "builder",
           "format": "table",
-          "rawSql": "SELECT res_status_code, SUM(request_count) AS count FROM bfe_ai_metrics_1m WHERE ts_min >= $__timeFrom() AND ts_min < $__timeTo() GROUP BY res_status_code ORDER BY count DESC",
+          "rawSql": "SELECT CAST(res_status_code AS CHAR) AS status_code, SUM(request_count) AS count FROM bfe_ai_metrics_1m WHERE ts_min >= $__timeFrom() AND ts_min < $__timeTo() GROUP BY res_status_code ORDER BY count DESC",
           "refId": "A",
           "table": "bfe_ai_metrics_1m"
         }
       ],
       "options": {
+        "reduceOptions": { "values": true, "fields": "", "calcs": [] },
         "legend": { "displayMode": "list", "placement": "bottom", "values": [ "value", "percent" ] },
         "tooltip": { "mode": "single" }
       },
@@ -787,6 +788,7 @@
         }
       ],
       "options": {
+        "reduceOptions": { "values": true, "fields": "", "calcs": [] },
         "legend": { "displayMode": "list", "placement": "bottom", "values": [ "value", "percent" ] },
         "tooltip": { "mode": "single" }
       },
@@ -814,6 +816,7 @@
         }
       ],
       "options": {
+        "reduceOptions": { "values": true, "fields": "", "calcs": [] },
         "legend": { "displayMode": "list", "placement": "bottom", "values": [ "value", "percent" ] },
         "tooltip": { "mode": "single" }
       },

@@ -287,6 +287,7 @@ ORDER BY CASE WHEN name = '其他' THEN 1 ELSE 0 END, count DESC
 ### 3.15 按协议请求量（维度下钻）
 
 - 类型：piechart
+- 说明：饼图需使用「按行取值（All values）」模式（面板 options 中 `reduceOptions.values = true`），否则 Grafana 会把数值列 `count` 折叠成单一切片（显示为 `count / 100%`），而不是按 `ai_protocol` 显示为 `openai` 等取值。
 - SQL：
 ```sql
 SELECT ai_protocol, SUM(request_count) AS count
@@ -298,6 +299,7 @@ GROUP BY ai_protocol ORDER BY count DESC
 ### 3.16 按模式请求量（维度下钻）
 
 - 类型：piechart
+- 说明：同上，饼图需 `reduceOptions.values = true`，按 `ai_mode` 显示为 `chat` 等取值。
 - SQL：
 ```sql
 SELECT ai_mode, SUM(request_count) AS count
@@ -344,9 +346,10 @@ GROUP BY header_host ORDER BY requests DESC LIMIT 10
 ### 3.20 按状态码分布（维度下钻）
 
 - 类型：piechart
+- 说明：饼图需 `reduceOptions.values = true`；`res_status_code` 为 SMALLINT，需 `CAST(... AS CHAR)` 转成字符串才能作为切片标签。
 - SQL：
 ```sql
-SELECT res_status_code, SUM(request_count) AS count
+SELECT CAST(res_status_code AS CHAR) AS status_code, SUM(request_count) AS count
 FROM bfe_ai_metrics_1m
 WHERE ts_min >= $__timeFrom() AND ts_min < $__timeTo()
 GROUP BY res_status_code ORDER BY count DESC
