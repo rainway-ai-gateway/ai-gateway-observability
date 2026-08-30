@@ -514,7 +514,7 @@
       "gridPos": { "h": 7, "w": 8, "x": 8, "y": 33 },
       "links": [],
       "title": "按提供商请求量",
-      "type": "piechart",
+      "type": "barchart",
       "datasource": "${DATASOURCE_NAME}",
       "targets": [
         {
@@ -522,17 +522,19 @@
           "datasource": { "type": "mysql", "uid": "${DS_DORIS}" },
           "editorMode": "builder",
           "format": "table",
-          "rawSql": "SELECT ai_provider, SUM(request_count) AS count FROM bfe_ai_metrics_1m WHERE ts_min >= $__timeFrom() AND ts_min < $__timeTo() AND ai_provider != '' GROUP BY ai_provider ORDER BY count DESC",
+          "rawSql": "SELECT name, SUM(cnt) AS count FROM (SELECT CASE WHEN rn <= 10 THEN ai_provider ELSE '其他' END AS name, cnt FROM (SELECT ai_provider, cnt, ROW_NUMBER() OVER (ORDER BY cnt DESC) AS rn FROM (SELECT ai_provider, SUM(request_count) AS cnt FROM bfe_ai_metrics_1m WHERE ts_min >= $__timeFrom() AND ts_min < $__timeTo() AND ai_provider != '' GROUP BY ai_provider) a) b) c GROUP BY name ORDER BY CASE WHEN name = '其他' THEN 1 ELSE 0 END, count DESC",
           "refId": "A",
           "table": "bfe_ai_metrics_1m"
         }
       ],
       "options": {
-        "legend": { "displayMode": "list", "placement": "bottom", "values": [ "value", "percent" ] },
-        "tooltip": { "mode": "single" }
+        "legend": { "displayMode": "hidden" },
+        "tooltip": { "mode": "single" },
+        "orientation": "horizontal",
+        "showValue": "always"
       },
       "fieldConfig": {
-        "defaults": { "color": { "mode": "palette-classic" } },
+        "defaults": { "unit": "none", "color": { "mode": "palette-classic" } },
         "overrides": []
       }
     },
@@ -752,12 +754,13 @@
           "datasource": { "type": "mysql", "uid": "${DS_DORIS}" },
           "editorMode": "builder",
           "format": "table",
-          "rawSql": "SELECT res_status_code, SUM(request_count) AS count FROM bfe_ai_metrics_1m WHERE ts_min >= $__timeFrom() AND ts_min < $__timeTo() GROUP BY res_status_code ORDER BY count DESC",
+          "rawSql": "SELECT CAST(res_status_code AS CHAR) AS status_code, SUM(request_count) AS count FROM bfe_ai_metrics_1m WHERE ts_min >= $__timeFrom() AND ts_min < $__timeTo() GROUP BY res_status_code ORDER BY count DESC",
           "refId": "A",
           "table": "bfe_ai_metrics_1m"
         }
       ],
       "options": {
+        "reduceOptions": { "values": true, "fields": "", "calcs": [] },
         "legend": { "displayMode": "list", "placement": "bottom", "values": [ "value", "percent" ] },
         "tooltip": { "mode": "single" }
       },
@@ -785,6 +788,7 @@
         }
       ],
       "options": {
+        "reduceOptions": { "values": true, "fields": "", "calcs": [] },
         "legend": { "displayMode": "list", "placement": "bottom", "values": [ "value", "percent" ] },
         "tooltip": { "mode": "single" }
       },
@@ -812,6 +816,7 @@
         }
       ],
       "options": {
+        "reduceOptions": { "values": true, "fields": "", "calcs": [] },
         "legend": { "displayMode": "list", "placement": "bottom", "values": [ "value", "percent" ] },
         "tooltip": { "mode": "single" }
       },
@@ -924,7 +929,7 @@
     "list": [
       {
         "current": { "selected": true, "text": "*", "value": "*" },
-        "hide": 0,
+        "hide": 2,
         "includeAll": true,
         "allValue": "*",
         "label": "模型",
@@ -941,7 +946,7 @@
       },
       {
         "current": { "selected": true, "text": "*", "value": "*" },
-        "hide": 0,
+        "hide": 2,
         "includeAll": true,
         "allValue": "*",
         "label": "API Key",
@@ -958,7 +963,7 @@
       },
       {
         "current": { "selected": true, "text": "*", "value": "*" },
-        "hide": 0,
+        "hide": 2,
         "includeAll": true,
         "allValue": "*",
         "label": "提供商",
@@ -975,7 +980,7 @@
       },
       {
         "current": { "selected": true, "text": "*", "value": "*" },
-        "hide": 0,
+        "hide": 2,
         "includeAll": true,
         "allValue": "*",
         "label": "Host",
@@ -992,7 +997,7 @@
       },
       {
         "current": { "selected": false, "text": "", "value": "" },
-        "hide": 0,
+        "hide": 2,
         "label": "URI",
         "name": "uri",
         "skipUrlSync": false,
