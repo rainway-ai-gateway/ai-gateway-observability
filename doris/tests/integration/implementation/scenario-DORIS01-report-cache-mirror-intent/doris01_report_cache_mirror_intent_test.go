@@ -1,13 +1,16 @@
 // 场景 DORIS01：数据报表二期（v0.8）Doris 侧对齐缓存/镜像/意图字段。
 //
 // 被测对象是本仓库真实 SQL 资产（doris/sqls/，仅做 ${VAR} 变量替换），
-// 覆盖五个测试例（详见 ../../测试设计文档/scenario-DORIS01-报表缓存镜像意图字段/场景说明.md）：
+// 覆盖六个测试例（详见 ../../测试设计文档/scenario-DORIS01-报表缓存镜像意图字段/场景说明.md）：
 //
 // TC01 全新安装 schema：明细表 +10 列 / 聚合表 40 维 KEY / INSERT JOB 创建成功
 // TC02 Routine Load 映射扩列被 Doris 接受（SHOW CREATE ROUTINE LOAD 含新 10 列）
-// TC03 明细 → 聚合口径：新维度取值与空值归一（COALESCE ''/0）
+// TC03 明细 → 聚合口径：新维度取值与空值归一（COALESCE ”/0）
 // TC04 存量升级 ALTER：旧表加 13 列 + 重复执行报 Duplicate column（Doris 3.0 无 IF NOT EXISTS）
 // TC05 聚合表重建：_v2 建表 + REPLACE WITH TABLE 原子换名（HOWTO §11.3 流程）
+// TC06 明细表唯一键重建（bfe#1417）：旧四列键下同秒并发只留 1 行（缺陷复现）→ 补 logid 重建后
+//
+//	各自成行 + NULL logid 归 0（HOWTO §11.5 流程）
 package doris01_test
 
 import (
@@ -203,7 +206,10 @@ WHERE ts_min = '%s'`, dbName, tsMinLit))
 	}
 	defer rows.Close()
 
-	type aggRow struct{ key string; vals [7]string }
+	type aggRow struct {
+		key  string
+		vals [7]string
+	}
 	gotRows := map[string]aggRow{}
 	for rows.Next() {
 		var cols [7]sql.NullString
@@ -330,6 +336,99 @@ func TestTC05MetricsRebuildSwap(t *testing.T) {
 
 	// 5) 删除旧表（换名后即为 _v2）
 	common.ExecIn(t, db, dbName, "DROP TABLE bfe_ai_metrics_1m_v2")
+}
+
+// TestTC06DetailUniqueKeyRebuild 明细表唯一键重建（HOWTO §11.5，bfe#1417）：
+// 旧四列键下"同秒 + 同 Key + 同模型、仅 logid 不同"的并发请求只留 1 行（缺陷复现）；
+// 按新 schema 建 _v2 并执行仓库升级脚本（回灌 + 原子换名）后各自成行，且 NULL logid 归 0。
+func TestTC06DetailUniqueKeyRebuild(t *testing.T) {
+	db := common.TestDB(t)
+	vars := common.DefaultVars(common.UniqueDBName(t))
+	dbName := common.NewTestDB(t, db, vars)
+
+	// 1) 模拟存量环境：由仓库 DDL 逆向替换出"四列键 + logid 可空"的旧表
+	newDDL := common.LoadSQL(t, common.SQLPath(t, "bfe_ai_request_log.sql"), vars)
+	oldDDL := strings.Replace(newDDL,
+		"UNIQUE KEY(hostid, log_time, ai_apikey_id, ai_requested_model, logid)",
+		"UNIQUE KEY(hostid, log_time, ai_apikey_id, ai_requested_model)", 1)
+	oldDDL = strings.Replace(oldDDL, "logid                   BIGINT NOT NULL", "logid                   BIGINT", 1)
+	if oldDDL == newDDL || strings.Contains(oldDDL, "ai_requested_model, logid)") {
+		t.Fatalf("旧 schema 生成失败：逆向替换未生效（仓库 DDL 的字面量可能已变）")
+	}
+	common.ExecIn(t, db, dbName, oldDDL)
+
+	// 2) 哨兵行 A/B：同秒 + 同 hostid/apikey/model、仅 logid 不同 → 旧键应合并为 1 行
+	const (
+		sameSecond = "2026-09-15 10:00:00"
+		dedupKey   = "dedup_key"
+		sameModel  = "same-second-model"
+	)
+	common.ExecIn(t, db, dbName, fmt.Sprintf(
+		"INSERT INTO bfe_ai_request_log (hostid, log_time, ai_apikey_id, ai_requested_model, logid, ai_total_tokens) VALUES "+
+			"('it_host','%s','%s','%s',1001,10),('it_host','%s','%s','%s',1002,20)",
+		sameSecond, dedupKey, sameModel, sameSecond, dedupKey, sameModel))
+
+	// common.QueryText 每行以 tab + 换行结尾，比较前需去空白
+	qt := func(query string) string { return strings.TrimSpace(common.QueryText(t, db, dbName, query)) }
+
+	if got := qt(fmt.Sprintf("SELECT COUNT(*) FROM bfe_ai_request_log WHERE ai_apikey_id='%s'", dedupKey)); got != "1" {
+		t.Fatalf("旧四列键下同秒并发行数 = %s，期望 1（缺陷复现失败：唯一键可能已含 logid）", got)
+	}
+
+	// 3) 哨兵行 C：历史 NULL logid 形态（另一 4 元组）
+	common.ExecIn(t, db, dbName,
+		"INSERT INTO bfe_ai_request_log (hostid, log_time, ai_apikey_id, ai_requested_model, logid) "+
+			"VALUES ('it_host','2026-09-15 10:00:01','null_key','m-1',NULL)")
+
+	// 4) 按新 schema 建 _v2（与 HOWTO §11.5 步骤 5.2 的 sed 同构），再执行仓库升级脚本（回灌 + 换名）
+	v2SQL := strings.Replace(newDDL, "CREATE TABLE bfe_ai_request_log", "CREATE TABLE bfe_ai_request_log_v2", 1)
+	common.ExecIn(t, db, dbName, v2SQL)
+	common.ExecFileIn(t, db, dbName,
+		common.SQLPath(t, "upgrade", "2026-10-13-issue-1417-detail-unique-key-logid", "bfe_ai_request_log_rebuild.sql"),
+		vars)
+
+	// 5) 唯一键已含 logid（去反引号/空格后做字面量比较，兼容 Doris 的 SHOW CREATE 渲染）
+	create := common.QueryText(t, db, dbName, "SHOW CREATE TABLE bfe_ai_request_log")
+	norm := strings.ReplaceAll(strings.ReplaceAll(create, "`", ""), " ", "")
+	if !strings.Contains(norm, "UNIQUEKEY(hostid,log_time,ai_apikey_id,ai_requested_model,logid)") {
+		t.Errorf("换名后唯一键未含 logid：\n%s", create)
+	}
+
+	// 6) logid 已收紧为 NOT NULL
+	var nullable string
+	if err := db.QueryRow(fmt.Sprintf(
+		"SELECT IS_NULLABLE FROM information_schema.COLUMNS "+
+			"WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='bfe_ai_request_log' AND COLUMN_NAME='logid'",
+		dbName)).Scan(&nullable); err != nil {
+		t.Fatalf("查询 logid 可空性失败: %v", err)
+	}
+	if !strings.EqualFold(nullable, "NO") {
+		t.Errorf("换名后 logid IS_NULLABLE = %s，期望 NO", nullable)
+	}
+
+	// 7) 回灌不恢复已丢行：旧表里 A/B 已被合并为 1 行，重建只能带走这一行
+	//    （历史不可回溯——这正是 issue 声明的边界：旧行 logid 为 0/已被覆盖）
+	if got := qt(fmt.Sprintf("SELECT COUNT(*) FROM bfe_ai_request_log WHERE ai_apikey_id='%s'", dedupKey)); got != "1" {
+		t.Errorf("重建后历史行数 = %s，期望 1（回灌沿用旧表已合并的结果，历史不可回溯）", got)
+	}
+	if got := qt("SELECT CAST(IFNULL(MAX(logid), -1) AS CHAR) FROM bfe_ai_request_log WHERE ai_apikey_id='null_key'"); got != "0" {
+		t.Errorf("NULL logid 行重建后 logid = %s，期望 0（IFNULL 兜底）", got)
+	}
+
+	// 8) 新键的判别力：重建后写入同一批（同秒 + 同 Key + 同模型、不同 logid）→ 各自成行
+	common.ExecIn(t, db, dbName, fmt.Sprintf(
+		"INSERT INTO bfe_ai_request_log (hostid, log_time, ai_apikey_id, ai_requested_model, logid, ai_total_tokens) VALUES "+
+			"('it_host','%s','%s','%s',1001,10),('it_host','%s','%s','%s',1002,20)",
+		sameSecond, dedupKey, sameModel, sameSecond, dedupKey, sameModel))
+	if got := qt(fmt.Sprintf("SELECT COUNT(*) FROM bfe_ai_request_log WHERE ai_apikey_id='%s'", dedupKey)); got != "2" {
+		t.Errorf("重建后同秒并发行数 = %s，期望 2（各自成行，缺陷消除）", got)
+	}
+
+	// 9) 旧表（换名后名为 _v2）可删除，新表名查询不受影响
+	common.ExecIn(t, db, dbName, "DROP TABLE bfe_ai_request_log_v2")
+	if got := qt(fmt.Sprintf("SELECT COUNT(*) FROM bfe_ai_request_log WHERE ai_apikey_id IN ('%s','null_key')", dedupKey)); got != "3" {
+		t.Errorf("删除旧表后新表查询异常：行数 = %s，期望 3", got)
+	}
 }
 
 // ---------- 辅助函数 ----------

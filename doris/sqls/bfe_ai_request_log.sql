@@ -6,7 +6,9 @@ CREATE TABLE bfe_ai_request_log (
     ai_apikey_id            VARCHAR(256)    COMMENT 'API Key ID',
     ai_requested_model      VARCHAR(128)    COMMENT '请求模型名',
 
-    logid                   BIGINT          COMMENT 'BFE 请求唯一标识',
+    -- logid：逐请求唯一标识（bfe#1417 起由 BFE 保证非 0）；作为 UNIQUE KEY 成员必须 NOT NULL
+    -- （Doris KEY 列不允许 NULL；Routine Load 映射始终提供该列）
+    logid                   BIGINT NOT NULL COMMENT 'BFE 请求唯一标识（逐请求唯一、非 0；bfe#1417）',
     product                 VARCHAR(64)     COMMENT '产品标识',
     log_tag                 VARCHAR(64)     COMMENT '日志标签：req_<product> / req_err_<product>',
 
@@ -141,7 +143,10 @@ CREATE TABLE bfe_ai_request_log (
     ai_intent_cache_hit     BOOLEAN         COMMENT '意图缓存命中（NULL=未分类）',
     ai_intent_questions_version VARCHAR(32) COMMENT '意图问题集版本'
 )
-UNIQUE KEY(hostid, log_time, ai_apikey_id, ai_requested_model)
+-- 唯一键含请求级判别列 logid（bfe#1417）：log_time 为秒级，缺 logid 时同秒同 Key 同模型的并发
+-- 请求会互相合并、只留 1 行（丢率 (n-1)/n，生产窗口实测 13.5%）；logid 恰为第 5 列，键仍是
+-- 列前缀（Doris 对 KEY 列的硬约束）。存量升级脚本：sqls/upgrade/2026-10-13-issue-1417-detail-unique-key-logid/
+UNIQUE KEY(hostid, log_time, ai_apikey_id, ai_requested_model, logid)
 PARTITION BY RANGE(log_time) (
     PARTITION p_init VALUES LESS THAN ('${INIT_PARTITION_DATE}')
 )

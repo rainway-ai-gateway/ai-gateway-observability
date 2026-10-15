@@ -10,7 +10,7 @@
 
 | 表 | 模型 | 粒度 | 用途 |
 |----|------|------|------|
-| `bfe_ai_request_log` | UNIQUE KEY（明细） | 单次请求 | 原始请求日志，用于明细检索、问题排查 |
+| `bfe_ai_request_log` | UNIQUE KEY（明细） | 单次请求（键含请求级判别列 `logid`） | 原始请求日志，用于明细检索、问题排查 |
 | `bfe_ai_metrics_1m` | AGGREGATE KEY（聚合） | 1 分钟 | 分钟级聚合，用于看板、趋势、告警 |
 
 - 明细表由 Routine Load（Kafka → Doris）实时写入。
@@ -26,7 +26,7 @@
 | 属性 | 值 |
 |------|----|
 | 模型 | UNIQUE KEY |
-| 主键 | `(hostid, log_time, ai_apikey_id, ai_requested_model)` |
+| 主键 | `(hostid, log_time, ai_apikey_id, ai_requested_model, logid)`——`logid` 为请求级判别列（`NOT NULL`，bfe#1417）；缺它时键退化为"秒 + Key + 模型"，同秒并发请求只留 1 行 |
 | 分区 | `PARTITION BY RANGE(log_time)`，动态分区按天（保留前 7 天 + 后 3 天） |
 | 分桶 | `DISTRIBUTED BY HASH(ai_apikey_id) BUCKETS 32` |
 | 压缩 | zstd |
@@ -41,7 +41,7 @@
 | `log_time` | DATETIME | 日志产生时间（**UTC 墙钟**：Routine Load 用 `DATE_SUB(FROM_UNIXTIME(timestamp), INTERVAL TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW()) SECOND)` 写入，任何 FE 时区下口径一致；与 MySQL 链路 log-reader 写入口径相同） | **时间字段**，明细表用此字段做时间过滤 |
 | `ai_apikey_id` | VARCHAR(256) | API Key ID（虚拟 Key，非原始 Key） | 维度 |
 | `ai_requested_model` | VARCHAR(128) | 请求模型名（客户端请求的模型） | 维度 |
-| `logid` | BIGINT | BFE 请求唯一标识 | — |
+| `logid` | BIGINT | BFE 请求唯一标识（逐请求唯一、非 0；BFE 侧为十进制值，与访问日志字符串 logid 逐值恒等）。**唯一键成员**（第 5 列，`NOT NULL`，bfe#1417）——修复前该列恒 0，键退化为"秒 + Key + 模型"，同秒并发请求只留 1 行 | — |
 | `product` | VARCHAR(64) | 产品标识 | 维度 |
 | `log_tag` | VARCHAR(64) | `req_<product>`（正常）/ `req_err_<product>`（错误） | — |
 
