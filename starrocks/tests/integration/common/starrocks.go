@@ -284,6 +284,43 @@ WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' AND COLUMN_NAME IN ('%s')`,
 	return out
 }
 
+// ColumnTypesDesc 返回 `DESC <db>.<table>` 的列名 → 声明类型映射（小写，形如 "boolean"、
+// "varchar(128)"、"bigint"）。
+//
+// 与 ColumnTypes 的差别：information_schema 把 BOOLEAN 呈现为 tinyint(1)，与真正的
+// TINYINT 无法区分——要断言"某布尔列确实声明为 BOOLEAN"必须走 DESC。TINYINT 声明会让
+// JSON 布尔静默落 NULL（issue #10），故布尔列的类型断言一律用本函数。
+func ColumnTypesDesc(t *testing.T, db *sql.DB, dbName, table string) map[string]string {
+	t.Helper()
+	rows, err := db.Query(fmt.Sprintf("DESC %s.%s", dbName, table))
+	if err != nil {
+		t.Fatalf("DESC %s.%s 失败: %v", dbName, table, err)
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		t.Fatalf("读取 DESC 列名失败: %v", err)
+	}
+	out := map[string]string{}
+	for rows.Next() {
+		vals := make([]sql.NullString, len(cols))
+		ptrs := make([]interface{}, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatalf("扫描 DESC 行失败: %v", err)
+		}
+		if vals[0].Valid {
+			out[vals[0].String] = strings.ToLower(vals[1].String)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("遍历 DESC 结果失败: %v", err)
+	}
+	return out
+}
+
 // ColumnCount 返回指定表（或 MV）的列数。
 func ColumnCount(t *testing.T, db *sql.DB, dbName, table string) int {
 	t.Helper()
