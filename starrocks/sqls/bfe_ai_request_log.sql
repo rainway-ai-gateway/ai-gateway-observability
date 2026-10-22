@@ -16,7 +16,10 @@ CREATE TABLE bfe_ai_request_log (
     -- 客户端连接
     client_ip               VARCHAR(64)     COMMENT '客户端 IP',
     client_network          VARCHAR(16)     COMMENT '客户端网络类型：Ipv4/Ipv6',
-    is_trust_src_ip         TINYINT         COMMENT '是否可信源 IP',
+    -- 布尔列必须声明 BOOLEAN：payload 里是 JSON true/false，SR 的 JSON 导入只在 BOOLEAN
+    -- 目标列上转成 1/0，声明成 TINYINT 会静默落 NULL（不报错、不计坏行；见
+    -- docs/modifications/2026-10-22-issue-10-boolean-columns/design-changes.md）
+    is_trust_src_ip         BOOLEAN         COMMENT '是否可信源 IP（JSON 布尔，落 0/1）',
     req_num                 INT             COMMENT '会话内请求序号（从 1 开始）',
     session_id              BIGINT          COMMENT '会话 ID',
     bfe_ip                  VARCHAR(64)     COMMENT 'BFE 服务器 IP',
@@ -92,7 +95,7 @@ CREATE TABLE bfe_ai_request_log (
 
     -- AI 可观测 (v0.2.0)
     ai_target_model         VARCHAR(128)    COMMENT '实际路由模型名',
-    ai_stream               TINYINT         COMMENT '是否流式：0=非流式, 1=流式',
+    ai_stream               BOOLEAN         COMMENT '是否流式：0=非流式, 1=流式（JSON 布尔，落 0/1）',
     ai_input_tokens         BIGINT          COMMENT '输入 Token 数',
     ai_output_tokens        BIGINT          COMMENT '输出 Token 数',
     ai_total_tokens         BIGINT          COMMENT '总 Token 数',

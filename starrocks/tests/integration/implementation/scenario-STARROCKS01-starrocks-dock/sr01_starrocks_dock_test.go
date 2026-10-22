@@ -9,9 +9,10 @@
 //
 // TC02 消费打平：真实 Kafka → Routine Load COLUMNS 映射，断言 level 十列 /
 //
-//	限流三列 / UTC 墙钟 / NULL 语义（demo 的 UInt64 域 logid 重写到 Int64 范围——
-//	SR 对超界 BIGINT 直接拒绝（错误行跳过），与 Doris 静默截断、CH UInt64 原值
-//	均为差异点，固化为文档断言）
+//	限流三列 / UTC 墙钟 / 布尔两列落 0/1 / NULL 语义（demo 的 UInt64 域 logid 重写到
+//	Int64 范围——SR 对超界 BIGINT 直接拒绝（错误行跳过），与 Doris 静默截断、CH UInt64
+//	原值均为差异点，固化为文档断言；布尔列断言是 issue #10 的回归守卫：TINYINT 声明
+//	会让 JSON 布尔静默落 NULL 且坏行计数为 0）
 //
 // TC03 明细→聚合口径：异步 MV 周期刷新，断言 24 指标关键子集 + 40 维关键子集，
 //
@@ -82,15 +83,18 @@ func TestTC01FreshInstall(t *testing.T) {
 		t.Errorf("MV 列数 = %d，期望 65（ts_day + 40 维 + 24 指标）", got)
 	}
 
-	// 3) 关键列类型（SR 方言落库形态固化；BOOLEAN 在 information_schema 以 tinyint 呈现）
-	types := common.ColumnTypes(t, db, dbName, "bfe_ai_request_log",
-		[]string{"logid", "log_time", "mirror_hit", "ai_intent_confidence", "level1Name", "ai_input_tokens"})
+	// 3) 关键列类型（SR 方言落库形态固化）。必须走 DESC：information_schema 把 BOOLEAN
+	//    呈现为 tinyint(1)，与真正的 TINYINT 无法区分——布尔列一旦被误声明为 TINYINT，
+	//    JSON 布尔会静默落 NULL（issue #10 的漏检路径），故布尔列断言以声明类型为准。
+	types := common.ColumnTypesDesc(t, db, dbName, "bfe_ai_request_log")
 	for col, want := range map[string]string{
-		"logid": "bigint", "log_time": "datetime", "mirror_hit": "tinyint",
+		"logid": "bigint", "log_time": "datetime",
+		"mirror_hit": "boolean", "ai_intent_cache_hit": "boolean",
+		"ai_stream": "boolean", "is_trust_src_ip": "boolean",
 		"ai_intent_confidence": "double", "level1Name": "varchar(128)", "ai_input_tokens": "bigint",
 	} {
 		if types[col] != want {
-			t.Errorf("明细表列 %s 类型 = %q，期望 %q", col, types[col], want)
+			t.Errorf("明细表列 %s 类型 = %q，期望 %q（DESC 口径）", col, types[col], want)
 		}
 	}
 
@@ -152,82 +156,110 @@ func TestTC02KafkaConsumptionFlatten(t *testing.T) {
 	// 本机 9p 盘上 Kafka 元数据获取偶发失败会使 job 创建即 PAUSED，自愈一次
 	common.ResumeRoutineLoadIfPaused(t, db, dbName)
 
-	// 生产三份 demo 样例（值即断言期望来源，兼校验 demo 文件与 DDL 一致性）。
-	// 两处消息层改写（不改 demo 文件）：
+	// 生产三份 demo 样例 + 一份"流式"变体（值即断言期望来源，兼校验 demo 文件与 DDL 一致性）。
+	// 消息层改写（不改 demo 文件）：
 	//  1. timestamp 重写为当前时刻——demo 时间戳 2026-08-24 早于动态分区 start=-7
 	//     的既有分区范围，消费落库会因无对应分区成为错误行；
-	//  2. logid 重写到 Int64 域（见 demoCases 注释）——SR 对超界 BIGINT 直接拒绝。
+	//  2. logid 重写到 Int64 域（见 demoCases 注释）——SR 对超界 BIGINT 直接拒绝；
+	//  3. 第 4 条把 normal 样例的 ai_stream / is_trust_src_ip 改写为 JSON true——三份 demo
+	//     都是 false，只覆盖 0 分支；布尔列落库口径（issue #10）要求 1/0 都被断言。
+	const streamLogid = "1060274976507610104"
 	base := time.Now()
 	demoTs := map[string]int64{}
-	payloads := make([][]byte, 0, len(demoCases))
+	payloads := make([][]byte, 0, len(demoCases)+1)
 	for i, c := range demoCases {
 		ts := base.Add(time.Duration(i-2) * 10 * time.Second).Unix()
 		demoTs[c.logid] = ts
 		payloads = append(payloads, demoPayload(t, c.file, c.logid, ts))
 	}
+	streamTs := base.Add(20 * time.Second).Unix()
+	demoTs[streamLogid] = streamTs
+	payloads = append(payloads, demoPayloadBool(t, demoCases[0].file, streamLogid, streamTs, true))
 	common.ProduceMessages(t, brokers, topic, payloads...)
 
-	// 断言期望：level 十列 / 限流三列 / NULL 语义（值与 demo/*.json 对应样例一致）
+	// 断言期望：level 十列 / 限流三列 / 布尔两列（JSON 布尔必须落 0/1，绝不能 NULL）/ NULL 语义
 	want := map[string]flattenExpect{
 		demoCases[0].logid: {
 			levels:     [10]string{"dep0", "rd", "dep2", "teama", "dep3", "yyx", "", "", "", ""},
 			rateLimit:  [3]string{"", "", ""},
 			confIsNull: "0", conf: "0.95",
+			stream: "0", trustSrcIP: "0",
 		},
 		demoCases[1].logid: {
 			levels:     [10]string{"dep0", "rd", "dep2", "teama", "", "", "", "", "", ""},
 			rateLimit:  [3]string{"rlp-0002", "tpm", "tpm1"},
 			confIsNull: "1", conf: "",
+			stream: "0", trustSrcIP: "0",
 		},
 		demoCases[2].logid: {
 			levels:     [10]string{"", "", "", "", "", "", "", "", "", ""},
 			rateLimit:  [3]string{"", "", ""},
 			confIsNull: "1", conf: "",
+			stream: "0", trustSrcIP: "0",
+		},
+		// normal 样例 + ai_stream/is_trust_src_ip 改写为 JSON true
+		streamLogid: {
+			levels:     [10]string{"dep0", "rd", "dep2", "teama", "dep3", "yyx", "", "", "", ""},
+			rateLimit:  [3]string{"", "", ""},
+			confIsNull: "0", conf: "0.95",
+			stream: "1", trustSrcIP: "1",
 		},
 	}
 
 	// Routine Load 消费有秒级到分钟级延迟（本机 9p 盘上消费组加入与分区分配
-	// 可达 1-2 分钟）：轮询至三个 logid 全部落明细表，期间 PAUSED 自愈
+	// 可达 1-2 分钟）：轮询至全部 logid 落明细表，期间 PAUSED 自愈
 	logids := make([]string, 0, len(want))
 	for logid := range want {
 		logids = append(logids, logid)
 	}
-	common.WaitFor(t, "三条样例消息落入明细表", 300*time.Second, 5*time.Second, func() bool {
+	common.WaitFor(t, "样例消息落入明细表", 300*time.Second, 5*time.Second, func() bool {
 		var n int
 		if err := db.QueryRow(fmt.Sprintf(
 			`SELECT COUNT(DISTINCT logid) FROM %s.bfe_ai_request_log WHERE logid IN (%s)`,
 			dbName, strings.Join(logids, ","))).Scan(&n); err != nil {
 			return false
 		}
-		if n == 3 {
+		if n == len(want) {
 			return true
 		}
 		common.ResumeRoutineLoadIfPaused(t, db, dbName)
 		return false
 	})
 
-	// 独立库 + 独立 topic：明细表应恰好 3 行，无重复消费/无历史残留
+	// 独立库 + 独立 topic：明细表应恰好 len(want) 行，无重复消费/无历史残留
 	if got := common.RowStrings(t, db, fmt.Sprintf(
-		`SELECT COUNT(*) FROM %s.bfe_ai_request_log`, dbName))[0]; got != "3" {
-		t.Fatalf("明细表行数 = %s，期望 3", got)
+		`SELECT COUNT(*) FROM %s.bfe_ai_request_log`, dbName))[0]; got != fmt.Sprintf("%d", len(want)) {
+		t.Fatalf("明细表行数 = %s，期望 %d", got, len(want))
 	}
 
-	// 逐 logid 断言：level 打平十列、限流打平三列、log_time UTC 墙钟、NULL 语义
+	// 逐 logid 断言：level 打平十列、限流打平三列、log_time UTC 墙钟、布尔两列 0/1、NULL 语义
 	for logid, exp := range want {
 		ts := demoTs[logid]
 		row := common.RowStrings(t, db, fmt.Sprintf(`SELECT
     level1Name, level1, level2Name, level2, level3Name, level3, level4Name, level4, level5Name, level5,
     rate_limit_policy_id, rate_limit_type, rate_limit_rule_name,
     CAST(logid AS CHAR), TIMESTAMPDIFF(SECOND, '1970-01-01 00:00:00', log_time), CAST(log_time AS CHAR),
-    IF(ai_intent_confidence IS NULL, '1', '0'), IFNULL(CAST(ai_intent_confidence AS CHAR), '')
+    IF(ai_intent_confidence IS NULL, '1', '0'), IFNULL(CAST(ai_intent_confidence AS CHAR), ''),
+    IF(ai_stream IS NULL, 'NULL', IF(ai_stream, '1', '0')),
+    IF(is_trust_src_ip IS NULL, 'NULL', IF(is_trust_src_ip, '1', '0'))
 FROM %s.bfe_ai_request_log WHERE logid = %s`, dbName, logid))
 
 		wantUTC := time.Unix(ts, 0).UTC().Format("2006-01-02 15:04:05")
 		wantRow := append(append(append([]string{}, exp.levels[:]...), exp.rateLimit[:]...),
-			logid, fmt.Sprintf("%d", ts), wantUTC, exp.confIsNull, exp.conf)
+			logid, fmt.Sprintf("%d", ts), wantUTC, exp.confIsNull, exp.conf, exp.stream, exp.trustSrcIP)
 		if strings.Join(row, "|") != strings.Join(wantRow, "|") {
 			t.Errorf("logid=%s 明细行不匹配:\n  got: %q\n want: %q", logid, row, wantRow)
 		}
+	}
+
+	// 布尔列非空守卫（issue #10）：payload 里两字段均为 JSON 布尔，若 DDL 把它们声明成
+	// TINYINT，SR 会静默写 NULL 且 NumberFilteredRows=0——只有列级非空统计能发现
+	guard := common.RowStrings(t, db, fmt.Sprintf(`SELECT
+    CAST(COUNT(*) - COUNT(ai_stream) AS CHAR),
+    CAST(COUNT(*) - COUNT(is_trust_src_ip) AS CHAR)
+FROM %s.bfe_ai_request_log`, dbName))
+	if guard[0] != "0" || guard[1] != "0" {
+		t.Errorf("布尔列存在 NULL 行：ai_stream 缺失 %s 行、is_trust_src_ip 缺失 %s 行（均应为 0）", guard[0], guard[1])
 	}
 }
 
@@ -237,6 +269,8 @@ type flattenExpect struct {
 	rateLimit  [3]string  // rate_limit_policy_id, rate_limit_type, rate_limit_rule_name
 	confIsNull string     // "0" = 非 NULL，"1" = NULL
 	conf       string
+	stream     string // ai_stream：'1' 流式 / '0' 非流式（断言查询把 NULL 渲染成 "NULL"）
+	trustSrcIP string // is_trust_src_ip：'1' 可信 / '0' 不可信
 }
 
 // demoLogid 返回指定 demo 样例的原始 logid（json.Number 保留原文，超 Int64 域）。
@@ -258,6 +292,22 @@ func demoPayload(t *testing.T, name string, logid string, ts int64) []byte {
 		t.Fatalf("序列化 demo %s 失败: %v", name, err)
 	}
 	// json.Encoder 输出末尾带换行，消息体不需要
+	return bytes.TrimRight(buf.Bytes(), "\n")
+}
+
+// demoPayloadBool 同 demoPayload，另把两个布尔字段改写为 JSON true/false。
+// 用于断言 Routine Load 把 JSON 布尔落成 0/1（三份 demo 的取值都是 false，只覆盖 0 分支）。
+func demoPayloadBool(t *testing.T, name, logid string, ts int64, v bool) []byte {
+	t.Helper()
+	m := loadDemo(t, name)
+	m["logid"] = json.Number(logid)
+	m["timestamp"] = json.Number(fmt.Sprintf("%d", ts))
+	m["ai_stream"] = v
+	m["is_trust_src_ip"] = v
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(m); err != nil {
+		t.Fatalf("序列化 demo %s 失败: %v", name, err)
+	}
 	return bytes.TrimRight(buf.Bytes(), "\n")
 }
 
@@ -474,6 +524,12 @@ func assertAggregation(t *testing.T, db *sql.DB, dbName, tsMin string) {
 	// 4) 镜像命中维度：normal 行 1，其余两行 0
 	if got := aggBreakdown(t, db, dbName, tsMin, "mirror_hit"); !eqMap(got, map[string]string{"1": "1", "0": "2"}) {
 		t.Errorf("mirror_hit 维度分布 = %v，期望 map[1:1 0:2]", got)
+	}
+
+	// 4b) 流式维度：直插行未写 ai_stream（NULL），MV 的 COALESCE(ai_stream,0) 归到 0 维度——
+	//     维度列在 BOOLEAN 基列之上仍为 tinyint，报表 stream 过滤口径不受布尔类型影响
+	if got := aggBreakdown(t, db, dbName, tsMin, "ai_stream"); !eqMap(got, map[string]string{"0": "3"}) {
+		t.Errorf("ai_stream 维度分布 = %v，期望 map[0:3]", got)
 	}
 
 	// 5) 意图答案维度：normal 行 intent-a-1，其余两行 ''（未分类）
