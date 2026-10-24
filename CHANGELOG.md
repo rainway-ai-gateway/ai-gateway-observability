@@ -10,7 +10,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v0.0.2-preview.1] - 2026-10-20
+## [v0.0.2] - 2026-10-24
 
 ### Added
 - ClickHouse asset tree (`clickhouse/`): table DDL, Kafka ingestion, materialized-view aggregation, one-shot `setup.sh` / `cleanup.sh`, integration tests and docs.
@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Doris `log_time` is now written as the UTC wall clock, and the Routine Load starts at `OFFSET_BEGINNING` so log records produced before the job existed are not skipped.
 - The Doris detail table `UNIQUE KEY` now carries `logid` (5th key column; `logid` is also `NOT NULL`, since Doris key columns cannot be null), so concurrent requests of one API key and model inside the same second are no longer merged into a single row. With a second-granularity `log_time` the full-row upsert kept only 1 of n rows, losing exactly (n-1)/n — the same defect measured as 13.5% of a production hour on the MySQL link — and the dropped rows' tokens and cost disappeared from every sum (bfenetworks/bfe#1417).
+- StarRocks detail table now declares `ai_stream` / `is_trust_src_ip` as BOOLEAN instead of TINYINT, because StarRocks JSON import only converts JSON true/false on BOOLEAN target columns and silently writes NULL into TINYINT ones (no error, not counted in `NumberFilteredRows`) — `stream_requests` stayed 0 and `logs?stream=true|false` matched no rows. Existing deployments upgrade by table rebuild plus Kafka replay, since StarRocks cannot ALTER TINYINT to BOOLEAN in place (HOWTO §8); integration cases TC01–TC03 gained assertions that would have caught this (#10).
 
 ## [v0.0.1] - 2026-08-30
 
@@ -34,5 +35,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Grafana display layer: MySQL datasource pointing at Doris FE (9030) plus dashboards, deployed by `grafana/setup.sh`.
 - `api/depends_api` and the `skills/gen-req-log-api` skill for generating the request-log API dependencies.
 
-[v0.0.2-preview.1]: https://github.com/rainway-ai-gateway/ai-gateway-observability/compare/v0.0.1...v0.0.2-preview.1
+[v0.0.2]: https://github.com/rainway-ai-gateway/ai-gateway-observability/compare/v0.0.1...v0.0.2
 [v0.0.1]: https://github.com/rainway-ai-gateway/ai-gateway-observability/releases/tag/v0.0.1
