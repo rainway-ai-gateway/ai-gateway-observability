@@ -184,5 +184,5 @@ level5     = json_unquote(json_extract(ai_apikeytags, '$.level5.tagvalue'))
 
 ## 7. 相关文档
 
-- 表结构与字段语义：[../design/TABLE_DESIGN.md](../design/TABLE_DESIGN.md)
-- Doris 端搭建指南：[../user/HOWTO.md](../user/HOWTO.md)
+- 表结构与字段语义：[../../design/TABLE_DESIGN.md](../../design/TABLE_DESIGN.md)
+- Doris 端搭建指南：[../../user/HOWTO.md](../../user/HOWTO.md)

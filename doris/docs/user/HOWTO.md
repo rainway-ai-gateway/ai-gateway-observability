@@ -37,7 +37,12 @@ doris/
 │   ├── bfe_ai_request_log.sql        # 明细表
 │   ├── bfe_ai_metrics_1m.sql         # 聚合表
 │   ├── bfe_ai_log_load_routine.sql   # Routine Load（Kafka → Doris）
-│   └── bfe_ai_metrics_1m_job.sql     # INSERT JOB（明细表 → 聚合表）
+│   ├── bfe_ai_metrics_1m_job.sql     # INSERT JOB（明细表 → 聚合表）
+│   └── upgrade/                      # 存量升级 SQL（全新部署无需执行）
+│       ├── 2026-09-29-report-cache-mirror-intent/
+│       │   └── bfe_ai_request_log_alter.sql  # 明细表 +13 列（在线 ALTER，每环境执行一次）
+│       └── 2026-10-13-issue-1417-detail-unique-key-logid/
+│           └── bfe_ai_request_log_rebuild.sql # 明细表唯一键补 logid（重建式：_v2 + 回灌 + SWAP，每环境执行一次）
 ├── demo/                             # 演示用 JSON 消息样例
 │   ├── normal_request.json           # 正常 AI 请求
 │   ├── rate_limit.json               # 限流命中请求
@@ -47,8 +52,9 @@ doris/
     │   └── HOWTO.md                  # 本文档（Doris 部署指南）
     ├── design/
     │   └── TABLE_DESIGN.md           # 表设计说明
-    └── modification/
-        └── 20260826update2newPb.md   # 升级到新 PB 的字段变更记录
+    └── modifications/
+        ├── 2026-08-26-update-to-new-pb/  # 升级到新 PB 的字段变更记录
+        └── 2026-09-29-report-cache-mirror-intent-doris-alignment/  # 报表二期 Doris 对齐缓存/镜像/意图字段
 ```
 
 ## 3. 配置
@@ -209,16 +215,183 @@ Doris 对象创建完成后，在 Grafana 中添加 **MySQL 数据源**连接 Do
 
 ## 9. 重要提示：聚合表设计
 
-本示例中的聚合表 `bfe_ai_metrics_1m` 包含 37 个维度列，**仅用于演示链路打通**。在实际生产环境中，维度过大和 1 分钟聚合粒度在 LLM 场景下往往不合理。建议：
+本示例中的聚合表 `bfe_ai_metrics_1m` 包含 40 个维度列，**仅用于演示链路打通**。在实际生产环境中，维度过大和 1 分钟聚合粒度在 LLM 场景下往往不合理。建议：
 
 - 按查询场景拆分为多个聚合表（核心流量、错误码、限流、认证拒绝等）
 - 聚合粒度调整为 5 分钟或 15 分钟
 - 稀疏维度（err_code、rate_limit_*）独立成表
 
-## 10. 文档更新历史
+## 11. 存量部署升级（v0.8 报表二期：缓存/镜像/意图字段）
+
+适用：已按既有版本部署、需要支持报表二期三组字段（缓存/镜像/意图）的**存量环境**。**全新部署无需本步骤**（`setup.sh` 使用的 SQL 已含新列）。详细设计见修改说明 [2026-09-29-report-cache-mirror-intent-doris-alignment](../modifications/2026-09-29-report-cache-mirror-intent-doris-alignment/design-changes.md)。
+
+| # | 变更 | 方式 | 影响 |
+|---|------|------|------|
+| 1 | 明细表 +13 列（10 列缓存/镜像/意图 + 3 列限流打平） | 在线 `ALTER`（每环境执行一次，重复执行报 `Duplicate column` 属预期） | 不阻塞读写 |
+| 2 | Routine Load 映射 +10 列 | 停止后按新映射重建任务 | 同名任务进度保留，从上次提交位点续传 |
+| 3 | 聚合表 +3 KEY 维度（`ai_cache_status`、`mirror_hit`、`ai_intent_answer`） | AGGREGATE KEY 只能整表重建（`_v2` + `SWAP` 原子换名） | 需低峰窗口执行；分钟表允许 ≤1 分钟空洞 |
+| 4 | 明细表唯一键补请求级判别列 `logid`（bfe#1417） | **整表重建**（`_v2` + 回灌 + `SWAP` 换名，每环境执行一次） | 需低峰窗口；Routine Load 短暂 PAUSE 后 RESUME（映射不变） |
+
+> **不追溯存量数据**：Routine Load 新列从映射上线后到达的消息起积累；聚合表新维度从切换时刻起积累（分钟表不回溯，同一期 MySQL 链路既定口径）。如需历史窗口立即可下钻，见步骤 3.2 的可选重算。
+
+### 11.1 明细表加列（在线，幂等）
+
+```bash
+cd /path/to/ai-gateway-observability/doris
+source setup.conf    # 或你的自定义配置文件
+
+sed -e 's|\${DORIS_DATABASE}|'"${DORIS_DATABASE}"'|g' \
+    sqls/upgrade/2026-09-29-report-cache-mirror-intent/bfe_ai_request_log_alter.sql | \
+    mysql -h${DORIS_HOST} -P${DORIS_PORT} -u${DORIS_USER}
+```
+
+> **执行一次即可**：Doris 3.0 不支持 `ADD COLUMN IF NOT EXISTS`，重复执行会因 `Duplicate column` 报错（属预期，跳过即可）。若需可重复执行的形态，请先在目标 Doris 版本上验证 `IF NOT EXISTS` 支持情况。
+
+### 11.2 重建 Routine Load（映射扩 10 列）
+
+Routine Load 不支持在线修改 `COLUMNS`，需停止后按新映射重建。**同名任务的消费进度会保留**，新任务从上次提交位点继续，不丢消息：
+
+```bash
+mysql -h${DORIS_HOST} -P${DORIS_PORT} -u${DORIS_USER} \
+    -e "STOP ROUTINE LOAD FOR bfe_ai_log_load;"
+
+# 与 setup.sh 相同的变量替换方式执行新版 bfe_ai_log_load_routine.sql
+sed -e 's|\${DORIS_DATABASE}|'"${DORIS_DATABASE}"'|g' \
+    -e 's|\${KAFKA_BROKER_LIST}|'"${KAFKA_BROKER_LIST}"'|g' \
+    -e 's|\${KAFKA_TOPIC}|'"${KAFKA_TOPIC}"'|g' \
+    -e 's|\${KAFKA_GROUP_ID}|'"${KAFKA_GROUP_ID}"'|g' \
+    -e 's|\${KAFKA_CLIENT_ID}|'"${KAFKA_CLIENT_ID}"'|g' \
+    sqls/bfe_ai_log_load_routine.sql | mysql -h${DORIS_HOST} -P${DORIS_PORT} -u${DORIS_USER}
+```
+
+### 11.3 聚合表重建（低峰窗口执行，先在测试环境演练）
+
+`bfe_ai_metrics_1m` 是 AGGREGATE KEY 模型，加 KEY 维度只能整表重建。Doris 版本不支持 `SWAP WITH` 时降级为 `RENAME` 两步换名（秒级切换窗口，期间查询报"表不存在"）：
+
+**3.1 删除旧 INSERT JOB（等待当前周期收尾）**
+
+```sql
+DROP JOB WHERE JobName = 'bfe_ai_metrics_1m_job';
+```
+
+**3.2 按新 schema 建 `bfe_ai_metrics_1m_v2`**（复用仓库新 DDL，表名替换为 `_v2`；`INIT_PARTITION_DATE` 建议设为当天，动态分区自动向前滚动 7 天）
+
+```bash
+sed -e 's|\${DORIS_DATABASE}|'"${DORIS_DATABASE}"'|g' \
+    -e 's|\${INIT_PARTITION_DATE}|'"$(date +%F)"'|g' \
+    -e 's|CREATE TABLE bfe_ai_metrics_1m|CREATE TABLE bfe_ai_metrics_1m_v2|' \
+    sqls/bfe_ai_metrics_1m.sql | mysql -h${DORIS_HOST} -P${DORIS_PORT} -u${DORIS_USER}
+```
+
+（可选）历史重算近 7 天——按新口径从新明细表回算写入 `_v2`，与 INSERT JOB 的 SELECT/GROUP BY 同构（40 维），此处不展开。
+
+**3.3 原子换名**（Doris 语法为 `REPLACE WITH TABLE ... PROPERTIES('swap'='true')`，即设计稿所称 SWAP）
+
+```sql
+ALTER TABLE bfe_ai_metrics_1m REPLACE WITH TABLE bfe_ai_metrics_1m_v2 PROPERTIES('swap' = 'true');
+```
+
+**3.4 用新版 SQL 重建 INSERT JOB**（GROUP BY 已扩 3 维；若生产/测试共用 Job 名，参考第 5 节说明调整 `JOB_NAME`）
+
+```bash
+sed -e 's|\${DORIS_DATABASE}|'"${DORIS_DATABASE}"'|g' \
+    sqls/bfe_ai_metrics_1m_job.sql | mysql -h${DORIS_HOST} -P${DORIS_PORT} -u${DORIS_USER}
+```
+
+**3.5 验证后删除旧表**（换名后旧表即为 `bfe_ai_metrics_1m_v2`）
+
+```sql
+-- 验证五类报表查询正常、新维度有数据后
+DROP TABLE bfe_ai_metrics_1m_v2;
+```
+
+### 11.4 升级验证
+
+```sql
+-- 明细表新列已落库（发送 demo/normal_request.json 后查询）
+SELECT ai_cache_status, mirror_hit, mirror_cluster, ai_intent_answer
+FROM bfe_ai_request_log
+WHERE log_time >= NOW() - INTERVAL 5 MINUTE;
+
+-- 聚合表新维度有数据（升级后下一分钟起）
+SELECT ai_cache_status, mirror_hit, ai_intent_answer, SUM(request_count) AS cnt
+FROM bfe_ai_metrics_1m
+WHERE ts_min >= NOW() - INTERVAL 5 MINUTE
+GROUP BY ai_cache_status, mirror_hit, ai_intent_answer;
+```
+
+### 11.5 明细表唯一键重建（bfe#1417：补请求级判别列 `logid`）
+
+适用：已部署明细表的**存量环境**，需要让"同秒同 Key 同模型"的并发请求各自成行（生产窗口实测丢 13.5%）。**全新部署无需本步骤**（`sqls/bfe_ai_request_log.sql` 已含新键）。详细设计见修改说明 [2026-10-13-issue-1417-detail-unique-key-logid](../modifications/2026-10-13-issue-1417-detail-unique-key-logid/design-changes.md)。
+
+明细表唯一键原为四列 `(hostid, log_time, ai_apikey_id, ai_requested_model)`，`log_time` 为秒级 → UNIQUE KEY 合并语义使同秒并发只留 1 行。Doris 的 KEY 列集合变更**不支持在线 schema change**，必须整表重建（同 §11.3 的 `_v2` + SWAP 模式）。
+
+**5.1 前置检查**
+
+```sql
+SELECT COUNT(*) FROM bfe_ai_request_log WHERE logid IS NULL;  -- 预期 0；非 0 由脚本 IFNULL(logid,0) 兜底
+```
+
+**5.2 按新 schema 建 `_v2`**（复用仓库新 DDL 做表名替换，与 §11.3 同法；`INIT_PARTITION_DATE` 建议当天，动态分区自动向前滚动）
+
+```bash
+cd /path/to/ai-gateway-observability/doris
+source setup.conf
+sed -e 's|\${DORIS_DATABASE}|'"${DORIS_DATABASE}"'|g' \
+    -e 's|\${INIT_PARTITION_DATE}|'"$(date +%F)"'|g' \
+    -e 's|CREATE TABLE bfe_ai_request_log|CREATE TABLE bfe_ai_request_log_v2|' \
+    sqls/bfe_ai_request_log.sql | mysql -h${DORIS_HOST} -P${DORIS_PORT} -u${DORIS_USER}
+```
+
+**5.3 暂停 Kafka 消费（降低换名窗口的写入竞争）**
+
+脚本中的 PAUSE/RESUME 以注释形式给出（便于在无 Routine Load 的测试库执行整个脚本），存量环境请手工按序执行：
+
+```bash
+mysql -h${DORIS_HOST} -P${DORIS_PORT} -u${DORIS_USER} -e "PAUSE ROUTINE LOAD FOR bfe_ai_log_load;"
+```
+
+**5.4 执行重建脚本**（回灌 + 原子换名；每环境执行一次）
+
+```bash
+sed -e 's|\${DORIS_DATABASE}|'"${DORIS_DATABASE}"'|g' \
+    sqls/upgrade/2026-10-13-issue-1417-detail-unique-key-logid/bfe_ai_request_log_rebuild.sql | \
+    mysql -h${DORIS_HOST} -P${DORIS_PORT} -u${DORIS_USER}
+```
+
+**5.5 恢复消费**（换名前后同名，映射无需改动）
+
+```bash
+mysql -h${DORIS_HOST} -P${DORIS_PORT} -u${DORIS_USER} -e "RESUME ROUTINE LOAD FOR bfe_ai_log_load;"
+```
+
+**5.6 验证**
+
+```sql
+-- 唯一键已含 logid（五列、末位 logid、NOT NULL）
+SHOW CREATE TABLE bfe_ai_request_log;
+-- 键列非 NULL
+SELECT logid FROM bfe_ai_request_log WHERE logid IS NULL;
+-- 同秒同 Key 同模型并发（发送 2 条同秒请求后）：应返回 2（修复前为 1）
+SELECT COUNT(*) AS c FROM bfe_ai_request_log
+ WHERE logid BETWEEN 1 AND 9223372036854775807
+ GROUP BY log_time, hostid, ai_apikey_id, ai_requested_model
+ ORDER BY c DESC LIMIT 5;
+```
+
+**5.7 清理**（换名后 `_v2` 名指向旧表）
+
+```sql
+DROP TABLE bfe_ai_request_log_v2;
+```
+
+> **不追溯存量数据**：存量行 `logid` 为 0（BFE 历史上从未写出非 0 值），重建后仍为 0——它们在先前的四列键下已互相合并，属历史事实，不可回溯。修复后的新行（BFE 侧已保证 `logid` 唯一非 0）各自成行。
+
+## 12. 文档更新历史
 
 | 日期 | 版本 | 变更说明 |
 |------|------|----------|
+| 2026-09-29 | v1.7 | 数据报表二期（v0.8）：明细表 +13 列（10 列缓存/镜像/意图 + 3 列限流打平）、聚合表 +3 KEY 维度（37→40 维）、INSERT JOB GROUP BY 扩 3 维、Routine Load 映射扩 13 列、demo 样例补新字段；新增第 11 节「存量部署升级」与 `sqls/upgrade/` ALTER 脚本（每环境执行一次）。Doris 3.0 兼容性修复：JOB 中 `ARRAY<STRUCT>` 元素字段解引用不被 Doris 3.0.8 支持，限流首个命中改由 Routine Load `json_extract` 打平为 `rate_limit_policy_id`/`rate_limit_type`/`rate_limit_rule_name` 标量列。**时区口径修复（集成测试实跑发现）**：`FROM_UNIXTIME` 按会话时区解释 epoch，FE 非 UTC 时 `log_time` 会偏移导致查询层（报表 API/Grafana 按 UTC 过滤）查不到数据——Routine Load 改为 `DATE_SUB(FROM_UNIXTIME(timestamp), INTERVAL TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW()) SECOND)` 写 UTC 墙钟，INSERT JOB 窗口改用 `UTC_TIMESTAMP()`，任何 FE 时区下口径一致 |
 | 2026-08-25 | v1.6 | 新增 `ai_protocol`、`ai_mode`（聚合表维度列）与 `ai_audio_input_tokens`、`ai_audio_output_tokens`、`ai_image_count`（明细表 + 聚合表指标列），同步 Routine Load、INSERT JOB、demo 样例与 TABLE_DESIGN.md |
 | 2026-08-24 | v1.5 | 新增 `cleanup.sh` 清空脚本：删除指定数据库下的明细表、聚合表、Routine Load 和 INSERT JOB |
 | 2026-08-24 | v1.4 | 数据库名参数化：新增 `DORIS_DATABASE` 配置项，`setup.sh` 执行时将 SQL 中的 `bfe_observability` 替换为配置值；新增测试配置 `setup_test.conf`（数据库 `bfe_observability_test`） |

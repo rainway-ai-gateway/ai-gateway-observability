@@ -10,7 +10,7 @@
 
 | 表 | 模型 | 粒度 | 用途 |
 |----|------|------|------|
-| `bfe_ai_request_log` | UNIQUE KEY（明细） | 单次请求 | 原始请求日志，用于明细检索、问题排查 |
+| `bfe_ai_request_log` | UNIQUE KEY（明细） | 单次请求（键含请求级判别列 `logid`） | 原始请求日志，用于明细检索、问题排查 |
 | `bfe_ai_metrics_1m` | AGGREGATE KEY（聚合） | 1 分钟 | 分钟级聚合，用于看板、趋势、告警 |
 
 - 明细表由 Routine Load（Kafka → Doris）实时写入。
@@ -26,7 +26,7 @@
 | 属性 | 值 |
 |------|----|
 | 模型 | UNIQUE KEY |
-| 主键 | `(hostid, log_time, ai_apikey_id, ai_requested_model)` |
+| 主键 | `(hostid, log_time, ai_apikey_id, ai_requested_model, logid)`——`logid` 为请求级判别列（`NOT NULL`，bfe#1417）；缺它时键退化为"秒 + Key + 模型"，同秒并发请求只留 1 行 |
 | 分区 | `PARTITION BY RANGE(log_time)`，动态分区按天（保留前 7 天 + 后 3 天） |
 | 分桶 | `DISTRIBUTED BY HASH(ai_apikey_id) BUCKETS 32` |
 | 压缩 | zstd |
@@ -38,10 +38,10 @@
 | 字段 | 类型 | 说明 | Grafana 提示 |
 |------|------|------|--------------|
 | `hostid` | VARCHAR(256) | 主机标识，格式 `hostname_netns` | 维度 |
-| `log_time` | DATETIME | 日志产生时间 | **时间字段**，明细表用此字段做时间过滤 |
+| `log_time` | DATETIME | 日志产生时间（**UTC 墙钟**：Routine Load 用 `DATE_SUB(FROM_UNIXTIME(timestamp), INTERVAL TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW()) SECOND)` 写入，任何 FE 时区下口径一致；与 MySQL 链路 log-reader 写入口径相同） | **时间字段**，明细表用此字段做时间过滤 |
 | `ai_apikey_id` | VARCHAR(256) | API Key ID（虚拟 Key，非原始 Key） | 维度 |
 | `ai_requested_model` | VARCHAR(128) | 请求模型名（客户端请求的模型） | 维度 |
-| `logid` | BIGINT | BFE 请求唯一标识 | — |
+| `logid` | BIGINT | BFE 请求唯一标识（逐请求唯一、非 0；BFE 侧为十进制值，与访问日志字符串 logid 逐值恒等）。**唯一键成员**（第 5 列，`NOT NULL`，bfe#1417）——修复前该列恒 0，键退化为"秒 + Key + 模型"，同秒并发请求只留 1 行 | — |
 | `product` | VARCHAR(64) | 产品标识 | 维度 |
 | `log_tag` | VARCHAR(64) | `req_<product>`（正常）/ `req_err_<product>`（错误） | — |
 
@@ -160,9 +160,35 @@
 | `ai_route_rule_hits` | ARRAY\<STRUCT\<`rule_owner`,`rule_owner_type`,`rule_name`\>\> | AI 路由规则命中记录 |
 | `ai_cluster_key_names` | ARRAY\<STRUCT\<`cluster_name`,`key_name`\>\> | 尝试过的集群与 Key 组合 |
 | `ai_rate_limit_hits` | ARRAY\<STRUCT\<`rate_limit_policy_id`,`rate_limit_type`,`rule_names`\>\> | 限流命中列表 |
+| `rate_limit_policy_id` | VARCHAR(128) | 限流策略 ID（取首个命中，**打平列**） |
+| `rate_limit_type` | VARCHAR(32) | 限流类型（取首个命中，**打平列**） |
+| `rate_limit_rule_name` | VARCHAR(128) | 限流规则名（取首条规则，**打平列**） |
 | `ai_auth_reject_reason` | VARCHAR(256) | 认证拒绝原因 |
 | `ai_auth_reject_quota_plans` | ARRAY\<VARCHAR(128)\> | 被拒绝的配额计划 |
 | `ai_auth_hit_quota_plans` | ARRAY\<VARCHAR(128)\> | 成功请求时命中的配额计划 |
+
+> 限流打平列：Doris 3.0 不支持 `ARRAY<STRUCT>` 元素字段解引用，无法在建表后用 SQL 从
+> `ai_rate_limit_hits` 提取字段，因此由 Routine Load 在导入时通过
+> `json_extract(ai_rate_limit_hits, '$[0].rate_limit_policy_id')` 等方式打平
+> （与 `level1Name`~`level5` 同一模式）；INSERT JOB 与报表查询直接使用打平列。
+
+**AI — 缓存/镜像/意图（v0.8 报表二期）**
+
+| 字段 | 类型 | 说明 | 单位/取值 |
+|------|------|------|-----------|
+| `ai_cache_status` | VARCHAR(16) | 缓存状态 | `hit`/`miss`/`skip`，空=未启用 |
+| `mirror_hit` | BOOLEAN | 镜像是否命中 | true/false |
+| `mirror_cluster` | VARCHAR(128) | 镜像集群 | 维度 |
+| `ai_intent_question` | VARCHAR(64) | 意图问题 | — |
+| `ai_intent_answer` | VARCHAR(64) | 意图答案 | 含 `unknown`，空=未分类 |
+| `ai_intent_confidence` | DOUBLE | 意图置信度 | NULL=未分类 |
+| `ai_intent_source` | VARCHAR(32) | 意图来源 | `explicit_header`/`classifier`/`cache` |
+| `ai_intent_latency_us` | BIGINT | 意图决策耗时 | 微秒 µs，NULL=未分类 |
+| `ai_intent_cache_hit` | BOOLEAN | 意图缓存命中 | NULL=未分类 |
+| `ai_intent_questions_version` | VARCHAR(32) | 意图问题集版本 | — |
+
+> 来源是 log-reader 字段注册表（bfe-access-pb v0.3.7/3.8/3.9 注册的缓存/镜像/意图字段），
+> Routine Load 按名映射直接落库。`ai_cache_key` 与 mirror 异步结果字段按一期决策不进报表。
 
 ---
 
@@ -173,7 +199,7 @@
 | 属性 | 值 |
 |------|----|
 | 模型 | AGGREGATE KEY |
-| 聚合维度 | 见 3.2（37 个维度列） |
+| 聚合维度 | 见 3.2（40 个维度列） |
 | 聚合指标 | SUM 类型，见 3.3（24 个指标列） |
 | 分区 | `PARTITION BY RANGE(ts_min)`，动态分区按天 |
 | 分桶 | `DISTRIBUTED BY HASH(ai_apikey_id) BUCKETS 16` |
@@ -207,6 +233,9 @@
 | `rate_limit_rule_name` | VARCHAR(128) | 限流规则名（取首条规则） |
 | `ai_auth_reject_reason` | VARCHAR(256) | 认证拒绝原因 |
 | `ai_auth_reject_quota_plans_slot1~slot5` | VARCHAR(128) | 被拒绝配额计划槽位 ×5 |
+| `ai_cache_status` | VARCHAR(16) | 缓存状态（`hit`/`miss`/`skip`，空=未启用） |
+| `mirror_hit` | TINYINT | 镜像命中（0/1） |
+| `ai_intent_answer` | VARCHAR(64) | 意图答案（含 `unknown`，空=未分类） |
 
 ### 3.3 聚合指标字段（SUM）
 
@@ -247,8 +276,9 @@ INSERT JOB 每分钟执行，逻辑如下（关键映射）：
 |-----------|---------------|
 | `ts_min` | `DATE_TRUNC(log_time, 'minute')` |
 | 维度列 | 对应明细表同名字段，`COALESCE(x, '')` 或 `COALESCE(x, 0)`（空值归一化） |
+| `ai_cache_status` / `mirror_hit` / `ai_intent_answer`（v0.8 新增维度） | 明细表同名字段，`COALESCE(ai_cache_status,'')` / `COALESCE(mirror_hit,0)` / `COALESCE(ai_intent_answer,'')` |
 | `level*Name/level*` | 直接来自明细表打平列 |
-| `rate_limit_policy_id/type/rule_name` | `ai_rate_limit_hits[1]` 的首个元素（`ELEMENT_AT(...,1)`） |
+| `rate_limit_policy_id/type/rule_name` | 明细表打平列（Routine Load 导入时从 `ai_rate_limit_hits` 首个命中 `json_extract` 提取，Doris 3.0 不支持 struct 字段解引用） |
 | `ai_auth_reject_quota_plans_slot1~5` | `ai_auth_reject_quota_plans` 的前 5 个元素 |
 | `ai_protocol` / `ai_mode` | 明细表同名字段，`COALESCE(x, '')` |
 | `ai_audio_input_tokens` / `ai_audio_output_tokens` / `ai_image_count` | `SUM(COALESCE(明细字段, 0))` |
@@ -381,6 +411,8 @@ GROUP BY ai_stream;   -- 0=非流式, 1=流式
 | 计数 | `request_count`、`error_count`、`auth_reject_count`、`rate_limit_hits`、`backend_retries`、`ai_retry_count_sum` | 次 |
 | 图片 | `ai_image_count` 及聚合 | 个 |
 | 流式 | `ai_stream` | 0=非流式，1=流式 |
+| 缓存状态 | `ai_cache_status` | `hit` / `miss` / `skip`，空=未启用 |
+| 意图来源 | `ai_intent_source` | `explicit_header` / `classifier` / `cache` |
 | 网络类型 | `client_network` | `Ipv4` / `Ipv6` |
 | 限流类型 | `rate_limit_type` | `tpm` / `rpm` / `concurrency` |
 | 币种 | `ai_cost_currency` | `RMB` / `USD` |
@@ -393,3 +425,4 @@ GROUP BY ai_stream;   -- 0=非流式, 1=流式
 |------|------|----------|
 | 2026-08-25 | v1.0 | 初始版本：最新 `bfe_ai_request_log`、`bfe_ai_metrics_1m` 表结构 |
 | 2026-08-25 | v1.1 | 新增 `ai_protocol`、`ai_mode`（聚合表维度列）与 `ai_audio_input_tokens`、`ai_audio_output_tokens`、`ai_image_count`（明细表 + 聚合表指标列） |
+| 2026-09-29 | v1.2 | 数据报表二期（v0.8）：明细表新增缓存/镜像/意图 10 列；聚合表新增 3 个 KEY 维度（`ai_cache_status`、`mirror_hit`、`ai_intent_answer`，37→40 维）；INSERT JOB GROUP BY 同步扩 3 维（重建步骤见修改说明 `modifications/2026-09-29-report-cache-mirror-intent-doris-alignment/`）；另含 Doris 3.0 兼容性修复：明细表新增 `rate_limit_policy_id`/`rate_limit_type`/`rate_limit_rule_name` 限流打平列（Routine Load `json_extract` 导入时打平，替代 JOB 中不被支持的 `ARRAY<STRUCT>` 元素字段解引用） |
