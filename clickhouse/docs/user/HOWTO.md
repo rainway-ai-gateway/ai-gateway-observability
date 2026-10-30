@@ -281,7 +281,33 @@ ClickHouse Kafka 引擎 + MV 为 **at-least-once**：位点提交前若写入失
 - 聚合粒度调整为 5 分钟或 15 分钟
 - 稀疏维度（err_code、rate_limit_*）独立成表
 
-## 11. 文档更新历史
+## 11. 存量部署升级（缺价信号两列，bfe#1479）
+
+模型缺少某接口定价时，BFE 会把缺价事实写到 `ai_price_miss`（`1` 发生 / `0` 显式未发生 / **NULL 未上报**）与 `ai_price_warn`（`fallback` / `subitem_missing` / `no_entry` / `no_baseline` / `no_model_table` / `reject`）。设计见 [2026-10-30-issue-1479-price-miss-columns](../modifications/2026-10-30-issue-1479-price-miss-columns/design-changes.md)。**全新部署无需本节**（`sqls/` 已含两列）。
+
+存量环境按以下四步，**顺序不可颠倒**：
+
+```bash
+# 1) 停消费（旧 MV 的 SELECT 不含新列，不重建则永远不落值；窗口内位点不推进，消息不丢）
+clickhouse client -q "DROP TABLE ${CLICKHOUSE_DATABASE}.bfe_ai_log_load_mv"
+
+# 2) 重建 Kafka 暂存表——Kafka 引擎**不支持任何 ALTER**
+#    （Code: 48 ... Alter of type 'ADD_COLUMN' is not supported by storage Kafka），只能重建；
+#    引擎表不存数据，kafka_group_name 不变即复用已提交位点
+clickhouse client -q "DROP TABLE ${CLICKHOUSE_DATABASE}.bfe_ai_log_kafka"
+#    再按 sqls/bfe_ai_log_kafka.sql 创建（变量替换方式同 setup.sh）
+
+# 3) 明细表加列（脚本内为 ADD COLUMN IF NOT EXISTS，可重复执行）
+#    见 sqls/upgrade/2026-10-30-issue-1479-price-miss-columns/bfe_ai_request_log_alter.sql
+
+# 4) 恢复消费：按 sqls/bfe_ai_log_load_mv.sql 创建消费 MV
+```
+
+> **两列必须是 `Nullable`**：`JSONEachRow` 下 JSON `null` 落非 `Nullable` 列会变列默认值（`0`/`''`），"未上报"与"显式未发生"就再也分不开。
+>
+> **历史数据不追溯**：升级前入库的行两列为 NULL（= 未上报），统计缺价率时按升级时间点切分窗口。
+
+## 12. 文档更新历史
 
 | 日期 | 版本 | 变更说明 |
 |------|------|----------|

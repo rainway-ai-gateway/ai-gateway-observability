@@ -119,5 +119,7 @@ SELECT
     ai_intent_source,
     ai_intent_latency_us,
     ai_intent_cache_hit,
-    ai_intent_questions_version
+    ai_intent_questions_version,
+    ai_price_miss,
+    ai_price_warn
 FROM ${CLICKHOUSE_DATABASE}.bfe_ai_log_kafka;

@@ -87,6 +87,6 @@ TC02 行为要点（详见 [TC-02 文档](./测试设计文档/scenario-STARROCK
 
 | 场景 | 说明 |
 |------|------|
-| STARROCKS01 StarRocks 对接 | 基于真实 SQL 资产验证 v0.8 StarRocks 侧落地：全新安装建 3 对象且行为固化（建库幂等/表 MV RL 非幂等）；真实 Kafka 消费打平（level 十列、限流三列、UTC 墙钟、NULL 语义）；明细→聚合 40 维 + 24 指标关键子集口径 + 增量刷新不重复累计；存量升级 ALTER（SR 3.5 不支持 ADD COLUMN IF NOT EXISTS 负向断言、MV 不自动携带新列）；聚合 MV 重建（DROP+CREATE 自动回填，口径不变） |
+| STARROCKS01 StarRocks 对接 | 基于真实 SQL 资产验证 v0.8 StarRocks 侧落地：全新安装建 3 对象且行为固化（建库幂等/表 MV RL 非幂等）；真实 Kafka 消费打平（level 十列、限流三列、UTC 墙钟、NULL 语义）；明细→聚合 40 维 + 24 指标关键子集口径 + 增量刷新不重复累计；存量升级 ALTER（SR 3.5 不支持 ADD COLUMN IF NOT EXISTS 负向断言、MV 不自动携带新列）；聚合 MV 重建（DROP+CREATE 自动回填，口径不变）；缺价信号两列（TC06：`ai_price_miss` 必须 BOOLEAN / `ai_price_warn` VARCHAR(32)，升级走纯 ADD COLUMN） |
 
 详细用例设计见 [测试设计文档](./测试设计文档/scenario-STARROCKS01-starrocks对接/场景说明.md)。

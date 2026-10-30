@@ -30,7 +30,10 @@ USE ${DORIS_DATABASE};
 --      在下方 SELECT 末尾追加 WHERE log_time >= '<起点>'；
 --   3) 每环境执行一次（非幂等）：重复执行时 _v2 已不存在或已换名，请按 HOWTO 重建；
 --   4) Doris 3.0.8 的原子换名语法为 REPLACE WITH TABLE ... PROPERTIES('swap'='true')；
---      不支持时降级为两次 RENAME（秒级窗口，期间查询报表不存在）。
+--      不支持时降级为两次 RENAME（秒级窗口，期间查询报表不存在）；
+--   5) 回灌列清单与**当前**明细表 schema 对齐（101 列，含 2026-10-30 的
+--      ai_price_miss / ai_price_warn）。若存量表尚无这两列，先执行
+--      sqls/upgrade/2026-10-30-issue-1479-price-miss-columns/bfe_ai_request_log_alter.sql。
 -- ============================================================
 
 -- 1) 回灌（列顺序与新表完全一致；logid 做 NULL 兜底）
@@ -56,7 +59,8 @@ SELECT
     ai_rate_limit_hits, rate_limit_policy_id, rate_limit_type, rate_limit_rule_name, ai_auth_reject_reason,
     ai_auth_reject_quota_plans, ai_auth_hit_quota_plans, ai_cache_status, mirror_hit, mirror_cluster,
     ai_intent_question, ai_intent_answer, ai_intent_confidence, ai_intent_source, ai_intent_latency_us,
-    ai_intent_cache_hit, ai_intent_questions_version
+    ai_intent_cache_hit, ai_intent_questions_version,
+    ai_price_miss, ai_price_warn
 FROM bfe_ai_request_log;
 
 -- 2) 原子换名（换名后 bfe_ai_request_log 指向新表，_v2 指向旧表；Routine Load 同名继续生效）

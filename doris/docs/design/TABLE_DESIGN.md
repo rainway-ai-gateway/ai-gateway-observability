@@ -186,6 +186,8 @@
 | `ai_intent_latency_us` | BIGINT | 意图决策耗时 | 微秒 µs，NULL=未分类 |
 | `ai_intent_cache_hit` | BOOLEAN | 意图缓存命中 | NULL=未分类 |
 | `ai_intent_questions_version` | VARCHAR(32) | 意图问题集版本 | — |
+| `ai_price_miss` | BOOLEAN | 是否发生缺价回退（bfe#1479） | 1=发生 / 0=显式未发生 / NULL=未上报 |
+| `ai_price_warn` | VARCHAR(32) | 缺价形态（bfe#1479） | `fallback`/`subitem_missing`/`no_entry`/`no_baseline`/`no_model_table`/`reject`，NULL=未上报 |
 
 > 来源是 log-reader 字段注册表（bfe-access-pb v0.3.7/3.8/3.9 注册的缓存/镜像/意图字段），
 > Routine Load 按名映射直接落库。`ai_cache_key` 与 mirror 异步结果字段按一期决策不进报表。

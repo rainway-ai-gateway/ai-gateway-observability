@@ -133,7 +133,11 @@ CREATE TABLE bfe_ai_request_log (
     ai_intent_source        VARCHAR(32)     COMMENT '意图来源：explicit_header/classifier/cache',
     ai_intent_latency_us    BIGINT          COMMENT '意图决策耗时（微秒，NULL=未分类）',
     ai_intent_cache_hit     BOOLEAN         COMMENT '意图缓存命中（NULL=未分类）',
-    ai_intent_questions_version VARCHAR(32) COMMENT '意图问题集版本'
+    ai_intent_questions_version VARCHAR(32) COMMENT '意图问题集版本',
+
+    -- AI 可观测 — 缺价信号（bfe#1479）
+    ai_price_miss           BOOLEAN         COMMENT '是否发生缺价回退（NULL=未上报，1/0）',
+    ai_price_warn           VARCHAR(32)     COMMENT '缺价形态：fallback/subitem_missing/no_entry/no_baseline/no_model_table/reject（NULL=未上报）'
 )
 DUPLICATE KEY(hostid, log_time, ai_apikey_id, ai_requested_model)
 PARTITION BY RANGE(log_time) (

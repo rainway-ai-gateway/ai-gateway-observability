@@ -31,7 +31,7 @@ STARROCKS01 StarRocks 对接（报表存储新引擎）
 1. 生成独立测试库名（`bfe_observability_it_tc01..._<纳秒>`），`DROP DATABASE IF EXISTS ... FORCE` 清残留后执行 `bfe_observability.sql` 建库；
 2. 按 setup.sh 顺序执行 `bfe_ai_request_log.sql`、`bfe_ai_metrics_1m.sql`、`bfe_ai_log_load_routine.sql`；
 3. 断言对象存在且类型正确：`information_schema.tables` 中 `bfe_ai_request_log`=BASE TABLE、`bfe_ai_metrics_1m`=VIEW（异步物化视图形态）；`SHOW ALL ROUTINE LOAD` 中本库存在 `bfe_ai_log_load`；`SHOW MATERIALIZED VIEWS` 中 `bfe_ai_metrics_1m` 存在且 `is_active=true`；
-4. 断言列数：明细表 102 列（与 doris 版 DDL 列定义数一致，逐列同名同型）；MV 65 列（分区列 ts_day + 40 维 + 24 指标）；
+4. 断言列数：明细表 104 列（与 doris 版 DDL 列定义数一致，逐列同名同型）；MV 65 列（分区列 ts_day + 40 维 + 24 指标）；
 5. 断言关键列类型（**用 `DESC` 而非 `information_schema`**：后者把 `BOOLEAN` 呈现为 `tinyint(1)`，与真正的 `TINYINT` 无法区分，布尔列类型错误在该视图下不可见——issue #10 的漏检路径）：`logid`=bigint、`log_time`=datetime、`mirror_hit`=`ai_intent_cache_hit`=`ai_stream`=`is_trust_src_ip`=**boolean**、`ai_intent_confidence`=double、`level1Name`=varchar(128)、`ai_input_tokens`=bigint；
 6. 重复应用行为：建库 SQL 重复执行成功（`IF NOT EXISTS` 幂等）；`bfe_ai_request_log.sql` / `bfe_ai_metrics_1m.sql` / `bfe_ai_log_load_routine.sql` 重复执行报错，且错误信息分别含 "already exists"（表/MV）与 "already used in db"（Routine Load，SR 特有报错文案）；
 7. `t.Cleanup` 中 `DROP DATABASE ... FORCE` 清理（`STARROCKS_IT_KEEP_DB=1` 可保留现场）。
