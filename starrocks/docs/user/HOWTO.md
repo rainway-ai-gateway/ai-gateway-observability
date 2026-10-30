@@ -199,6 +199,35 @@ FROM bfe_ai_request_log;"
 3. **时间戳无分区会成错误行**：`INIT_PARTITION_DATE` 之后、动态分区窗口（`start=-7`）之外的消息会因无对应分区被跳过，必要时在重放前临时放宽 `dynamic_partition.start`；
 4. 若 Kafka 保留期短于 7 天，明细历史会相应缩短（旧数据本就不可修复），需在变更单写明。
 
+### 8.4. 缺价信号两列（bfe#1479，无需重建表）
+
+模型缺少某接口定价时，BFE 会把缺价事实写到 `ai_price_miss`（`1` 发生 / `0` 显式未发生 / **NULL 未上报**）与 `ai_price_warn`（`fallback` / `subitem_missing` / `no_entry` / `no_baseline` / `no_model_table` / `reject`）。与 §8 的布尔类型修复不同，**这次是纯加列，不需要重建表、不需要重放 Kafka**（历史行两列为 NULL = 未上报）。设计见 [2026-10-30-issue-1479-price-miss-columns](../modifications/2026-10-30-issue-1479-price-miss-columns/design-changes.md)。
+
+```sql
+-- 1) 判断是否已有两列（SR 3.5 不支持 ADD COLUMN IF NOT EXISTS，先查再加）
+SELECT column_name FROM information_schema.columns
+ WHERE table_schema = 'bfe_observability' AND table_name = 'bfe_ai_request_log'
+   AND column_name IN ('ai_price_miss','ai_price_warn');
+
+-- 2) 加列（ai_price_miss 必须是 BOOLEAN：JSON true/false 落 TINYINT 会静默 NULL，见 issue #10）
+ALTER TABLE bfe_ai_request_log
+    ADD COLUMN ai_price_miss BOOLEAN      COMMENT '是否发生缺价回退（NULL=未上报，1/0）' AFTER ai_intent_questions_version,
+    ADD COLUMN ai_price_warn VARCHAR(32)  COMMENT '缺价形态：fallback/subitem_missing/no_entry/no_baseline/no_model_table/reject（NULL=未上报）' AFTER ai_price_miss;
+```
+
+Schema Change 是**异步**的：`ALTER` 返回成功后要轮询 `information_schema.columns` 直到两列可见，再重建 Routine Load：
+
+```sql
+-- 3) 重建 RL（COLUMNS 扩 2 列；沿用原 KAFKA_GROUP_ID 才会从已提交位点续消费）
+STOP ROUTINE LOAD FOR bfe_ai_log_load;
+DROP ROUTINE LOAD FOR bfe_ai_log_load;
+--  再执行新版 sqls/bfe_ai_log_load_routine.sql
+```
+
+> **顺序不可颠倒**：先加列、再重建 RL。明细表是 `DUPLICATE KEY` 模型、没有幂等覆盖，重建 RL 若从 `OFFSET_BEGINNING` 重放会产生重复行——沿用原消费组即可避免。
+>
+> **不要照抄 §8 的重建流程**：那是为了修 `TINYINT → BOOLEAN` 的历史值；本次加列无需重建表。
+
 ## 9. 常见问题
 
 ### 9.1. Routine Load 状态为 PAUSED

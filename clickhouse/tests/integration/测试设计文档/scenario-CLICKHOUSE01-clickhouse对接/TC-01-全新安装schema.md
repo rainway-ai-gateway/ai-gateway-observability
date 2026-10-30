@@ -15,7 +15,7 @@ CLICKHOUSE01 ClickHouse 对接（报表存储新引擎）
 
 ## 测试目的
 
-验证全新安装路径下，仓库 SQL 资产按 setup.sh 六步顺序建出的对象与设计稿一致：明细表（MergeTree）、Kafka 引擎暂存表（Kafka）、消费 MV（MaterializedView）、聚合表（SummingMergeTree）、聚合 MV（MaterializedView）共 5 个对象；且全部 `CREATE ... IF NOT EXISTS`，重复应用幂等（setup.sh 可重跑）。
+验证全新安装路径下，仓库 SQL 资产按 setup.sh 六步顺序建出的对象与设计稿一致：明细表（MergeTree）、Kafka 引擎暂存表（Kafka）、消费 MV（MaterializedView）、聚合表（SummingMergeTree）、聚合 MV（MaterializedView）共 5 个对象；且全部 `CREATE ... IF NOT EXISTS`，重复应用幂等（setup.sh 可重跑）。同时断言缺价信号两列（bfe#1479）在明细表与 Kafka 暂存表均存在且为 `Nullable(UInt8)` / `Nullable(String)`——非 Nullable 会把"未上报"写成 0/空串。
 
 ## 运行模式
 

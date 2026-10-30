@@ -29,11 +29,11 @@
 
 ### 1.2 设计原则（与 Doris 逐条对齐的口径）
 
-1. 明细表与 Doris 同名同列（102 列，含 level×10、rate_limit×3 打平列与缓存/镜像/意图 10 列）；其中 5 个嵌套列（`req_headers`/`res_headers`/`ai_route_rule_hits`/`ai_cluster_key_names`/`ai_rate_limit_hits`）在 SR 侧以 VARCHAR 承载 JSON 文本（类型偏差及原因见 §2.2），列名契约不变；字段语义全量沿用 `doris/docs/design/TABLE_DESIGN.md`，本文档不重复枚举。
+1. 明细表与 Doris 同名同列（104 列，含 level×10、rate_limit×3 打平列、缓存/镜像/意图 10 列与缺价信号 2 列）；其中 5 个嵌套列（`req_headers`/`res_headers`/`ai_route_rule_hits`/`ai_cluster_key_names`/`ai_rate_limit_hits`）在 SR 侧以 VARCHAR 承载 JSON 文本（类型偏差及原因见 §2.2），列名契约不变；字段语义全量沿用 `doris/docs/design/TABLE_DESIGN.md`，本文档不重复枚举。
 2. 聚合 40 维 + 24 指标，逐列同名同口径（见 §3）。
 3. UTC 墙钟：`log_time` 存 UTC，由 Routine Load COLUMNS 内的可移植算术式换算（不依赖 FE 会话时区）。
 4. 7 天保留：明细表动态分区 + MV `partition_ttl`。
-5. **布尔字段一律 `BOOLEAN`**（`ai_stream`/`is_trust_src_ip`/`mirror_hit`/`ai_intent_cache_hit`）：SR 的 JSON 导入只在 `BOOLEAN` 目标列上把 JSON `true/false` 转成 `1/0`，`TINYINT` 会静默落 NULL；`TINYINT` 只用于真正的整数语义（`res_status_code` 等）。跨引擎按"语义"对齐（Doris `TINYINT` / CH `UInt8` / SR `BOOLEAN`），不按字面类型对齐（§2.2、修改说明 2026-10-22）。`BOOLEAN` 同时吸收 JSON `1/0`，上游改写口径也不需要再改本侧 DDL。
+5. **布尔字段一律 `BOOLEAN`**（`ai_stream`/`is_trust_src_ip`/`mirror_hit`/`ai_intent_cache_hit`/`ai_price_miss`）：SR 的 JSON 导入只在 `BOOLEAN` 目标列上把 JSON `true/false` 转成 `1/0`，`TINYINT` 会静默落 NULL；`TINYINT` 只用于真正的整数语义（`res_status_code` 等）。跨引擎按"语义"对齐（Doris `TINYINT` / CH `UInt8` / SR `BOOLEAN`），不按字面类型对齐（§2.2、修改说明 2026-10-22）。`BOOLEAN` 同时吸收 JSON `1/0`，上游改写口径也不需要再改本侧 DDL。
 
 ---
 
@@ -54,7 +54,7 @@
 
 ### 2.2 字段说明
 
-列契约与 Doris 版同名同列（102 列）；其中 5 个嵌套列**按 StarRocks 能力以 VARCHAR 承载 JSON 文本**（类型偏差，见下表），其余列同型。全量字段语义（分组说明、取值口径、与 Kafka JSON 字段的对应关系）见 `doris/docs/design/TABLE_DESIGN.md` §2，此处仅列出 StarRocks 侧需要注意的点：
+列契约与 Doris 版同名同列（104 列）；其中 5 个嵌套列**按 StarRocks 能力以 VARCHAR 承载 JSON 文本**（类型偏差，见下表），其余列同型。全量字段语义（分组说明、取值口径、与 Kafka JSON 字段的对应关系）见 `doris/docs/design/TABLE_DESIGN.md` §2，此处仅列出 StarRocks 侧需要注意的点：
 
 | 字段 | 类型 | StarRocks 侧说明 |
 |------|------|------------------|
@@ -64,7 +64,7 @@
 | `logid` | BIGINT | BFE 请求唯一标识；**SR 对超 Int64 域的值直接拒绝**（INSERT 报 Number out of range；Routine Load 计错误行跳过）——与 Doris 静默截断、CH UInt64 原值保留为三引擎差异点（上游实际 logid 在 Int64 范围内） |
 | `level1Name~level5` | VARCHAR(128) ×10 | 由 Routine Load 从 `ai_apikeytags` JSON 打平（`get_json_string`），源字段不落表；未打平的层级为 NULL |
 | `log_time` | DATETIME | **UTC 墙钟**，由 COLUMNS 算术式写入；时间过滤一律用此字段 |
-| `ai_stream` / `is_trust_src_ip` / `mirror_hit` / `ai_intent_cache_hit` | **BOOLEAN** | payload 里是 **JSON `true`/`false`**，落库 `0/1`（`NULL` = 未上报）。**必须声明 `BOOLEAN`**：SR 的 JSON 导入只在 `BOOLEAN` 目标列上做布尔→`1/0` 转换，声明成 `TINYINT` 会**静默写 NULL**（`NumberFilteredRows=0`、RL 不报错，只能靠列级非空统计发现）——Doris/CH 分别用 `TINYINT`/`UInt8` 也能正确吸收，属引擎差异，见 [2026-10-22-issue-10-boolean-columns](../modifications/2026-10-22-issue-10-boolean-columns/design-changes.md) |
+| `ai_stream` / `is_trust_src_ip` / `mirror_hit` / `ai_intent_cache_hit` / `ai_price_miss` | **BOOLEAN** | payload 里是 **JSON `true`/`false`**，落库 `0/1`（`NULL` = 未上报）。**必须声明 `BOOLEAN`**：SR 的 JSON 导入只在 `BOOLEAN` 目标列上做布尔→`1/0` 转换，声明成 `TINYINT` 会**静默写 NULL**（`NumberFilteredRows=0`、RL 不报错，只能靠列级非空统计发现）——Doris/CH 分别用 `TINYINT`/`UInt8` 也能正确吸收，属引擎差异，见 [2026-10-22-issue-10-boolean-columns](../modifications/2026-10-22-issue-10-boolean-columns/design-changes.md) |
 
 ### 2.3 导入通道：Routine Load `bfe_ai_log_load`
 

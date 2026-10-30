@@ -30,6 +30,8 @@
     "ai_input_tokens": 34,
     "ai_mode": "",
     "ai_output_tokens": 173,
+    "ai_price_miss": true,
+    "ai_price_warn": "subitem_missing",
     "ai_protocol": "",
     "ai_provider": "",
     "ai_rate_limit_hits": [],

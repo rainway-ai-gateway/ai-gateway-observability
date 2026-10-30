@@ -10,6 +10,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Missing-price signal columns in all three backends (`ai_price_miss`, `ai_price_warn`) for bfenetworks/bfe#1479: when an interface has no price entry, bfe bills through a fallback, bills zero, or refuses the request, and reports which shape applied. The columns are nullable everywhere and `NULL` means "not reported" — never `0`/`''` — so a report cannot mistake "not applicable" for "billed wrong".
+  - ClickHouse: `Nullable(UInt8)` / `Nullable(String)` on both `bfe_ai_request_log` and the `bfe_ai_log_kafka` staging table, projected by `bfe_ai_log_load_mv`; upgrade script `sqls/upgrade/2026-10-30-issue-1479-price-miss-columns/`.
+  - Doris: `BOOLEAN` / `VARCHAR(32)` plus two `COLUMNS` entries in the Routine Load; upgrade script `sqls/upgrade/2026-10-30-issue-1479-price-miss-columns/`.
+  - StarRocks: `BOOLEAN` / `VARCHAR(32)` plus two `COLUMNS` entries; upgrade is plain `ADD COLUMN` (no table rebuild). `ai_price_miss` must be `BOOLEAN` — a `TINYINT` target silently nulls JSON booleans (#10).
+- Integration coverage: clickhouse-it TC01/TC02 assertions plus new TC06 (upgrade path), doris-it TC01/TC02 assertions plus new TC07, starrocks-it TC01/TC02 assertions plus new TC06. The `normal_request.json` demo sample now carries `ai_price_miss: true` / `ai_price_warn: "subitem_missing"`; the other two samples deliberately omit them to pin the NULL semantics.
+
+### Fixed
+- ClickHouse: the Kafka staging table cannot be altered at all (`Code: 48 ... Alter of type 'ADD_COLUMN' is not supported by storage Kafka`, DROP likewise), so its upgrade path is DROP + recreate; the upgrade script documents the order and clickhouse-it TC06 asserts the limitation negatively.
+- Doris: the `2026-10-13` unique-key rebuild script selected an explicit 99-column list, which broke as soon as the detail table gained the two new columns (`insert into cols should be corresponding to the query output`). The replay list is extended to the current 101-column schema and its header now states the prerequisite.
+
 ## [v0.0.2] - 2026-10-24
 
 ### Added

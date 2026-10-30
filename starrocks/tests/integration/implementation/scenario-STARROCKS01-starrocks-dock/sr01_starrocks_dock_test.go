@@ -74,10 +74,10 @@ func TestTC01FreshInstall(t *testing.T) {
 		t.Errorf("物化视图 bfe_ai_metrics_1m 不存在或 is_active=false")
 	}
 
-	// 2) 列数：明细表与 Doris 版 DDL 逐列同名同型（102 列，两版 DDL 列定义数一致）；
+	// 2) 列数：明细表与 Doris 版 DDL 逐列同名同型（104 列，两版 DDL 列定义数一致）；
 	//    MV = 分区列 ts_day + 40 维 + 24 指标 = 65 列
-	if got := common.ColumnCount(t, db, dbName, "bfe_ai_request_log"); got != 102 {
-		t.Errorf("明细表列数 = %d，期望 102", got)
+	if got := common.ColumnCount(t, db, dbName, "bfe_ai_request_log"); got != 104 {
+		t.Errorf("明细表列数 = %d，期望 104", got)
 	}
 	if got := common.ColumnCount(t, db, dbName, "bfe_ai_metrics_1m"); got != 65 {
 		t.Errorf("MV 列数 = %d，期望 65（ts_day + 40 维 + 24 指标）", got)
@@ -92,6 +92,8 @@ func TestTC01FreshInstall(t *testing.T) {
 		"mirror_hit": "boolean", "ai_intent_cache_hit": "boolean",
 		"ai_stream": "boolean", "is_trust_src_ip": "boolean",
 		"ai_intent_confidence": "double", "level1Name": "varchar(128)", "ai_input_tokens": "bigint",
+		// 缺价信号（bfe#1479）：ai_price_miss 同样吃 JSON 布尔，必须是 BOOLEAN（issue #10 教训）
+		"ai_price_miss": "boolean", "ai_price_warn": "varchar(32)",
 	} {
 		if types[col] != want {
 			t.Errorf("明细表列 %s 类型 = %q，期望 %q（DESC 口径）", col, types[col], want)
@@ -184,18 +186,24 @@ func TestTC02KafkaConsumptionFlatten(t *testing.T) {
 			rateLimit:  [3]string{"", "", ""},
 			confIsNull: "0", conf: "0.95",
 			stream: "0", trustSrcIP: "0",
+			priceMissIsNull: "0", priceMiss: "1",
+			priceWarnIsNull: "0", priceWarn: "subitem_missing",
 		},
 		demoCases[1].logid: {
 			levels:     [10]string{"dep0", "rd", "dep2", "teama", "", "", "", "", "", ""},
 			rateLimit:  [3]string{"rlp-0002", "tpm", "tpm1"},
 			confIsNull: "1", conf: "",
 			stream: "0", trustSrcIP: "0",
+			priceMissIsNull: "1", priceMiss: "",
+			priceWarnIsNull: "1", priceWarn: "",
 		},
 		demoCases[2].logid: {
 			levels:     [10]string{"", "", "", "", "", "", "", "", "", ""},
 			rateLimit:  [3]string{"", "", ""},
 			confIsNull: "1", conf: "",
 			stream: "0", trustSrcIP: "0",
+			priceMissIsNull: "1", priceMiss: "",
+			priceWarnIsNull: "1", priceWarn: "",
 		},
 		// normal 样例 + ai_stream/is_trust_src_ip 改写为 JSON true
 		streamLogid: {
@@ -203,6 +211,9 @@ func TestTC02KafkaConsumptionFlatten(t *testing.T) {
 			rateLimit:  [3]string{"", "", ""},
 			confIsNull: "0", conf: "0.95",
 			stream: "1", trustSrcIP: "1",
+			// 该条由 normal 样例派生，缺价两列随之带上
+			priceMissIsNull: "0", priceMiss: "1",
+			priceWarnIsNull: "0", priceWarn: "subitem_missing",
 		},
 	}
 
@@ -241,12 +252,15 @@ func TestTC02KafkaConsumptionFlatten(t *testing.T) {
     CAST(logid AS CHAR), TIMESTAMPDIFF(SECOND, '1970-01-01 00:00:00', log_time), CAST(log_time AS CHAR),
     IF(ai_intent_confidence IS NULL, '1', '0'), IFNULL(CAST(ai_intent_confidence AS CHAR), ''),
     IF(ai_stream IS NULL, 'NULL', IF(ai_stream, '1', '0')),
-    IF(is_trust_src_ip IS NULL, 'NULL', IF(is_trust_src_ip, '1', '0'))
+    IF(is_trust_src_ip IS NULL, 'NULL', IF(is_trust_src_ip, '1', '0')),
+    IF(ai_price_miss IS NULL, '1', '0'), IF(ai_price_miss IS NULL, '', IF(ai_price_miss, '1', '0')),
+    IF(ai_price_warn IS NULL, '1', '0'), IFNULL(ai_price_warn, '')
 FROM %s.bfe_ai_request_log WHERE logid = %s`, dbName, logid))
 
 		wantUTC := time.Unix(ts, 0).UTC().Format("2006-01-02 15:04:05")
 		wantRow := append(append(append([]string{}, exp.levels[:]...), exp.rateLimit[:]...),
-			logid, fmt.Sprintf("%d", ts), wantUTC, exp.confIsNull, exp.conf, exp.stream, exp.trustSrcIP)
+			logid, fmt.Sprintf("%d", ts), wantUTC, exp.confIsNull, exp.conf, exp.stream, exp.trustSrcIP,
+			exp.priceMissIsNull, exp.priceMiss, exp.priceWarnIsNull, exp.priceWarn)
 		if strings.Join(row, "|") != strings.Join(wantRow, "|") {
 			t.Errorf("logid=%s 明细行不匹配:\n  got: %q\n want: %q", logid, row, wantRow)
 		}
@@ -271,6 +285,11 @@ type flattenExpect struct {
 	conf       string
 	stream     string // ai_stream：'1' 流式 / '0' 非流式（断言查询把 NULL 渲染成 "NULL"）
 	trustSrcIP string // is_trust_src_ip：'1' 可信 / '0' 不可信
+	// 缺价信号两列（bfe#1479）：未携带字段的消息必须为 NULL（≠ 0/空串）
+	priceMissIsNull string
+	priceMiss       string
+	priceWarnIsNull string
+	priceWarn       string
 }
 
 // demoLogid 返回指定 demo 样例的原始 logid（json.Number 保留原文，超 Int64 域）。
@@ -280,7 +299,7 @@ func demoLogid(t *testing.T, name string) string {
 }
 
 // demoPayload 读取 demo 样例、将 logid 重写到 Int64 域取值 logid、timestamp 改写为 ts
-//（其余字段原样保留，含数字字面量），压缩为单行 JSON 消息体返回。
+// （其余字段原样保留，含数字字面量），压缩为单行 JSON 消息体返回。
 func demoPayload(t *testing.T, name string, logid string, ts int64) []byte {
 	t.Helper()
 	m := loadDemo(t, name)
@@ -375,9 +394,67 @@ WHERE ts_min = '%s' GROUP BY ts_min`, dbName, tsMin.Format("2006-01-02 15:04:05"
 	}
 }
 
+// TestTC06PriceMissUpgrade 缺价信号存量升级（bfe#1479）：DROP 两列模拟旧表 → 按设计稿
+// §4 的升级语句 ADD COLUMN → 类型（DESC 口径）与明细 NULL 语义正确。SR 的 Schema Change
+// 异步生效，列的出现/消失均需轮询。
+func TestTC06PriceMissUpgrade(t *testing.T) {
+	db := common.TestDB(t)
+	vars := common.DefaultVars(common.NewDBName(t))
+	dbName := common.NewTestDB(t, db, vars)
+	common.SetupFreshInstall(t, db, dbName, vars, true /*withMV*/, false /*withRoutineLoad*/)
+
+	// 1) 旧表模拟：DROP 两列，轮询至不可见
+	common.ExecIn(t, db, dbName,
+		"ALTER TABLE bfe_ai_request_log DROP COLUMN ai_price_miss, DROP COLUMN ai_price_warn")
+	common.WaitFor(t, "两列已从明细表移除", 60*time.Second, time.Second, func() bool {
+		return len(common.ColumnTypes(t, db, dbName, "bfe_ai_request_log",
+			[]string{"ai_price_miss", "ai_price_warn"})) == 0
+	})
+
+	// 2) 按设计稿 §4 的升级语句加列（SR 3.5 不支持 ADD COLUMN IF NOT EXISTS，每环境一次）
+	common.ExecIn(t, db, dbName, `ALTER TABLE bfe_ai_request_log
+    ADD COLUMN ai_price_miss BOOLEAN     COMMENT '是否发生缺价回退（NULL=未上报，1/0）' AFTER ai_intent_questions_version,
+    ADD COLUMN ai_price_warn VARCHAR(32) COMMENT '缺价形态：fallback/subitem_missing/no_entry/no_baseline/no_model_table/reject（NULL=未上报）' AFTER ai_price_miss`)
+	waitColumn(t, db, dbName, "bfe_ai_request_log", "ai_price_miss")
+	waitColumn(t, db, dbName, "bfe_ai_request_log", "ai_price_warn")
+
+	// 3) 类型（DESC 口径）：ai_price_miss 必须是 BOOLEAN——JSON 布尔落 TINYINT 会静默写 NULL
+	types := common.ColumnTypesDesc(t, db, dbName, "bfe_ai_request_log")
+	if types["ai_price_miss"] != "boolean" || types["ai_price_warn"] != "varchar(32)" {
+		t.Errorf("升级后列类型 = ai_price_miss:%q / ai_price_warn:%q，期望 boolean / varchar(32)",
+			types["ai_price_miss"], types["ai_price_warn"])
+	}
+
+	// 4) 明细 NULL 语义：带信号行 1/'subitem_missing'；旧消息行两列 NULL（≠ 0/空串）
+	ts := time.Now().Add(-2 * time.Minute).Truncate(time.Minute)
+	common.ExecIn(t, db, dbName, fmt.Sprintf(`INSERT INTO bfe_ai_request_log
+    (hostid, log_time, ai_apikey_id, ai_requested_model, logid, ai_price_miss, ai_price_warn)
+VALUES
+    ('it_host', '%s', 'it_key', 'it_model', 6001, 1, 'subitem_missing'),
+    ('it_host', '%s', 'it_key', 'it_model', 6002, NULL, NULL)`,
+		ts.Add(10*time.Second).Format("2006-01-02 15:04:05"),
+		ts.Add(20*time.Second).Format("2006-01-02 15:04:05")))
+
+	for _, c := range []struct {
+		logid           int64
+		wantMiss, wantW string
+	}{
+		{6001, "1", "subitem_missing"},
+		{6002, "NULL", "NULL"},
+	} {
+		row := common.RowStrings(t, db, fmt.Sprintf(`SELECT
+    IF(ai_price_miss IS NULL, 'NULL', IF(ai_price_miss, '1', '0')),
+    IFNULL(ai_price_warn, 'NULL')
+FROM %s.bfe_ai_request_log WHERE logid = %d`, dbName, c.logid))
+		if row[0] != c.wantMiss || row[1] != c.wantW {
+			t.Errorf("logid=%d 缺价两列 = %q/%q，期望 %q/%q", c.logid, row[0], row[1], c.wantMiss, c.wantW)
+		}
+	}
+}
+
 // TestTC05MetricsRebuild 重建模式：DROP MV → 按仓库 DDL 重建（REPLACE 语义，
 // SR 无 Doris 原子换名）→ 与 CH 不同，SR 异步 MV 创建后自动从基表全量回填
-//（无需 CH 侧手工 INSERT..SELECT 重算）→ 口径与重建前逐项一致。
+// （无需 CH 侧手工 INSERT..SELECT 重算）→ 口径与重建前逐项一致。
 func TestTC05MetricsRebuild(t *testing.T) {
 	db := common.TestDB(t)
 	vars := common.DefaultVars(common.NewDBName(t))
@@ -468,7 +545,7 @@ VALUES
 }
 
 // waitMVRequestCount 轮询至 MV 中 ts_min 桶的 SUM(request_count) 达到 want
-//（异步 MV 每分钟触发一次刷新，且增量刷新可能分批可见——必须等到全量行数到位，
+// （异步 MV 每分钟触发一次刷新，且增量刷新可能分批可见——必须等到全量行数到位，
 // 不能以"出现聚合行"为信号；deadline 放宽到 240s）。
 func waitMVRequestCount(t *testing.T, db *sql.DB, dbName, tsMin string, want int) {
 	t.Helper()

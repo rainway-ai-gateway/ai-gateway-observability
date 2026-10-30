@@ -68,6 +68,18 @@ func TestTC01FreshInstall(t *testing.T) {
 		t.Errorf("库 %s 对象数 = %d，期望 %d（实际: %v）", dbName, len(objects), len(wantObjects), objects)
 	}
 
+	// 3) 缺价信号两列存在且类型正确（bfe#1479）：必须是 Nullable——否则 JSON null
+	//    会被写成列默认值 0/''，"未上报"与"显式未发生"无法区分
+	for _, tbl := range []string{"bfe_ai_request_log", "bfe_ai_log_kafka"} {
+		got := common.ColumnTypes(t, db, dbName, tbl, []string{"ai_price_miss", "ai_price_warn"})
+		if got["ai_price_miss"] != "Nullable(UInt8)" {
+			t.Errorf("%s.ai_price_miss 类型 = %q，期望 Nullable(UInt8)", tbl, got["ai_price_miss"])
+		}
+		if got["ai_price_warn"] != "Nullable(String)" {
+			t.Errorf("%s.ai_price_warn 类型 = %q，期望 Nullable(String)", tbl, got["ai_price_warn"])
+		}
+	}
+
 	// 2) 重复应用全部六份 SQL 幂等（IF NOT EXISTS / CREATE DATABASE IF NOT EXISTS）
 	for _, f := range setupOrder {
 		common.ExecFileIn(t, db, common.SQLPath(t, f), vars)
@@ -132,16 +144,22 @@ func TestTC02KafkaConsumptionFlatten(t *testing.T) {
 			levels:     [10]string{"dep0", "rd", "dep2", "teama", "dep3", "yyx", "", "", "", ""},
 			rateLimit:  [3]string{"", "", ""},
 			confIsNull: "0", conf: "0.95",
+			priceMissIsNull: "0", priceMiss: "1",
+			priceWarnIsNull: "0", priceWarn: "subitem_missing",
 		},
 		"8877700219231856663": {
 			levels:     [10]string{"dep0", "rd", "dep2", "teama", "", "", "", "", "", ""},
 			rateLimit:  [3]string{"rlp-0002", "tpm", "tpm1"},
 			confIsNull: "1", conf: "",
+			priceMissIsNull: "1", priceMiss: "",
+			priceWarnIsNull: "1", priceWarn: "",
 		},
 		"12345678901234567890": {
 			levels:     [10]string{"", "", "", "", "", "", "", "", "", ""},
 			rateLimit:  [3]string{"", "", ""},
 			confIsNull: "1", conf: "",
+			priceMissIsNull: "1", priceMiss: "",
+			priceWarnIsNull: "1", priceWarn: "",
 		},
 	}
 	var logids []string
@@ -174,12 +192,15 @@ func TestTC02KafkaConsumptionFlatten(t *testing.T) {
     level1Name, level1, level2Name, level2, level3Name, level3, level4Name, level4, level5Name, level5,
     rate_limit_policy_id, rate_limit_type, rate_limit_rule_name,
     toString(logid), toString(toUnixTimestamp(log_time)), toString(log_time),
-    toString(isNull(ai_intent_confidence)), ifNull(toString(ai_intent_confidence), '')
+    toString(isNull(ai_intent_confidence)), ifNull(toString(ai_intent_confidence), ''),
+    toString(isNull(ai_price_miss)), ifNull(toString(ai_price_miss), ''),
+    toString(isNull(ai_price_warn)), ifNull(ai_price_warn, '')
 FROM %s.bfe_ai_request_log WHERE logid = %s`, dbName, logid))
 
 		wantUTC := time.Unix(ts, 0).UTC().Format("2006-01-02 15:04:05")
 		wantRow := append(append(append([]string{}, exp.levels[:]...), exp.rateLimit[:]...),
-			logid, fmt.Sprintf("%d", ts), wantUTC, exp.confIsNull, exp.conf)
+			logid, fmt.Sprintf("%d", ts), wantUTC, exp.confIsNull, exp.conf,
+			exp.priceMissIsNull, exp.priceMiss, exp.priceWarnIsNull, exp.priceWarn)
 		if strings.Join(row, "|") != strings.Join(wantRow, "|") {
 			t.Errorf("logid=%s 明细行不匹配:\n  got: %q\n want: %q", logid, row, wantRow)
 		}
@@ -192,6 +213,11 @@ type flattenExpect struct {
 	rateLimit  [3]string  // rate_limit_policy_id, rate_limit_type, rate_limit_rule_name
 	confIsNull string     // "0" = 非 NULL，"1" = NULL
 	conf       string
+	// 缺价信号两列（bfe#1479）：IsNull 同为 "0"/"1" 口径；未携带字段的样例必须为 NULL
+	priceMissIsNull string
+	priceMiss       string
+	priceWarnIsNull string
+	priceWarn       string
 }
 
 // demoLogid 返回指定 demo 样例的 logid（json.Number 保留原文）。
@@ -311,6 +337,62 @@ func TestTC05MetricsRebuild(t *testing.T) {
 
 	// 4) 重建后口径不变：与重建前同一套断言
 	assertAggregation(t, db, dbName, tsMin.Format("2006-01-02 15:04:05"))
+}
+
+// TestTC06PriceMissUpgrade 存量升级路径（bfe#1479）：模拟旧环境（明细表无两列 + 消费 MV 不存在），
+// 按升级步骤恢复——Kafka 暂存表重建（Kafka 存储引擎不支持 ALTER，做负向断言）→ 明细表 ADD COLUMN
+// 幂等 → 重建消费 MV 且投影含两列。无需 Kafka。
+func TestTC06PriceMissUpgrade(t *testing.T) {
+	db := common.TestDB(t)
+	vars := common.DefaultVars(common.NewDBName(t))
+	dbName := common.NewTestDB(t, db, vars)
+	common.SetupFreshInstall(t, db, vars, true /*withKafka*/)
+
+	priceCols := []string{"ai_price_miss", "ai_price_warn"}
+
+	// 1) 旧环境模拟：先 DROP 消费 MV（否则新列断链/无法 DROP 列），再 DROP 明细表两列
+	common.ExecIn(t, db, fmt.Sprintf("DROP TABLE %s.bfe_ai_log_load_mv", dbName))
+	common.ExecIn(t, db, fmt.Sprintf(
+		"ALTER TABLE %s.bfe_ai_request_log DROP COLUMN ai_price_miss, DROP COLUMN ai_price_warn", dbName))
+	if got := common.ColumnTypes(t, db, dbName, "bfe_ai_request_log", priceCols); len(got) != 0 {
+		t.Fatalf("旧环境模拟失败，明细表仍存在新列: %v", got)
+	}
+
+	// 2) 负向断言（升级步骤第 2 步的依据）：Kafka 存储引擎不支持任何 ALTER，
+	//    ADD/DROP COLUMN 一律 Code 48 NOT_IMPLEMENTED，故只能 DROP + 重建。
+	_, err := db.Exec(fmt.Sprintf(
+		"ALTER TABLE %s.bfe_ai_log_kafka ADD COLUMN IF NOT EXISTS it_probe Nullable(UInt8)", dbName))
+	if err == nil || !strings.Contains(err.Error(), "not supported by storage Kafka") {
+		t.Fatalf("Kafka 引擎表 ALTER 预期报 not supported by storage Kafka，实际: %v", err)
+	}
+
+	// 3) 升级第 2 步：重建 Kafka 暂存表（引擎表不存数据，同 kafka_group_name 复用已提交位点）
+	common.ExecIn(t, db, fmt.Sprintf("DROP TABLE %s.bfe_ai_log_kafka", dbName))
+	common.ExecFileIn(t, db, common.SQLPath(t, "bfe_ai_log_kafka.sql"), vars)
+	gotKafka := common.ColumnTypes(t, db, dbName, "bfe_ai_log_kafka", priceCols)
+	if gotKafka["ai_price_miss"] != "Nullable(UInt8)" || gotKafka["ai_price_warn"] != "Nullable(String)" {
+		t.Errorf("重建后 Kafka 暂存表列类型 = %v，期望 ai_price_miss=Nullable(UInt8) / ai_price_warn=Nullable(String)", gotKafka)
+	}
+
+	// 4) 升级第 3 步：明细表加列，执行两次验证 IF NOT EXISTS 幂等
+	//    （与 Doris 每次一次 / SR 不支持 IF NOT EXISTS 的契约不同，固化为断言）
+	alterFile := common.SQLPath(t, "upgrade", "2026-10-30-issue-1479-price-miss-columns", "bfe_ai_request_log_alter.sql")
+	common.ExecFileIn(t, db, alterFile, vars)
+	common.ExecFileIn(t, db, alterFile, vars)
+	gotDetail := common.ColumnTypes(t, db, dbName, "bfe_ai_request_log", priceCols)
+	if gotDetail["ai_price_miss"] != "Nullable(UInt8)" || gotDetail["ai_price_warn"] != "Nullable(String)" {
+		t.Errorf("升级后明细表列类型 = %v，期望 ai_price_miss=Nullable(UInt8) / ai_price_warn=Nullable(String)", gotDetail)
+	}
+
+	// 5) 升级第 4 步：重建消费 MV，断言其 SELECT 已投影两列——旧 MV 不重建则永远不落值
+	common.ExecFileIn(t, db, common.SQLPath(t, "bfe_ai_log_load_mv.sql"), vars)
+	asSelect := common.QueryText(t, db, fmt.Sprintf(
+		"SELECT as_select FROM system.tables WHERE database = '%s' AND name = 'bfe_ai_log_load_mv'", dbName))
+	for _, col := range priceCols {
+		if !strings.Contains(asSelect, col) {
+			t.Errorf("重建后的消费 MV 未投影 %s；as_select = %s", col, asSelect)
+		}
+	}
 }
 
 // insertDemoRows 向明细表写入三行样例等价数据（取值与 demo/*.json 一致），

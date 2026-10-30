@@ -204,6 +204,8 @@
 | `ai_intent_latency_us` | Nullable(Int64) | 意图决策耗时 | 微秒 µs，NULL=未分类 |
 | `ai_intent_cache_hit` | Nullable(UInt8) | 意图缓存命中 | NULL=未分类，0/1 |
 | `ai_intent_questions_version` | String | 意图问题集版本 | — |
+| `ai_price_miss` | Nullable(UInt8) | 是否发生缺价回退（bfe#1479） | 1=发生 / 0=显式未发生 / NULL=未上报 |
+| `ai_price_warn` | Nullable(String) | 缺价形态（bfe#1479） | `fallback`/`subitem_missing`/`no_entry`/`no_baseline`/`no_model_table`/`reject`，NULL=未上报 |
 
 ### 2.3 ClickHouse 特有设计
 
