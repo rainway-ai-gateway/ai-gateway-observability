@@ -12,7 +12,9 @@
 --       - auth_reject_count  = sum(ai_auth_reject_reason != '') -- 认证拒绝数
 --       - rate_limit_hits    = sum(length(ai_rate_limit_hits) > 0) -- 命中限流的请求数
 --       - quota_plans_slotN  = ai_auth_reject_quota_plans[N]（越界取类型默认值 ''）
---       - 其余 17 个指标       = sum(<明细列>)（明细列非空，等价 Doris COALESCE 归一）
+--       - ttft_us_sum/tpot_us_sum = sumIf(ai_ttft_us/ai_tpot_us, ai_stream=1)
+--         （仅流式行，ai-gateway-api issue #315；与 api 查询侧流式口径恒等）
+--       - 其余 15 个指标       = sum(<明细列>)（明细列非空，等价 Doris COALESCE 归一）
 --   * 默认不挂 POPULATE，从 MV 创建时刻起积累（同 Doris 口径）；
 --     历史窗口重算：INSERT INTO bfe_ai_metrics_1m SELECT ... FROM bfe_ai_request_log
 --     GROUP BY <全 40 维>（同本 MV 的 SELECT）。
@@ -67,8 +69,10 @@ SELECT
     sum(ai_input_tokens)                    AS input_tokens,
     sum(ai_output_tokens)                   AS output_tokens,
     sum(ai_total_tokens)                    AS total_tokens,
-    sum(ai_ttft_us)                         AS ttft_us_sum,
-    sum(ai_tpot_us)                         AS tpot_us_sum,
+    -- ttft/tpot 仅累加流式行（ai-gateway-api issue #315）：BFE 对非流式响应同样
+    -- 实测首包/每 token 耗时（非流式 ai_ttft_us 可非 0），流式口径分子不得包含。
+    sumIf(ai_ttft_us, ai_stream = 1)        AS ttft_us_sum,
+    sumIf(ai_tpot_us, ai_stream = 1)        AS tpot_us_sum,
     sum(req_header_len)                     AS req_header_bytes,
     sum(req_body_len)                       AS req_body_bytes,
     sum(res_header_len)                     AS res_header_bytes,

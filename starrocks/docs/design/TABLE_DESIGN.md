@@ -114,6 +114,7 @@ GROUP BY ts_day, ts_min, <40 维>;
 | 配额计划槽位打平 | `COALESCE(ELEMENT_AT(ai_auth_reject_quota_plans, n), '')` | `COALESCE(ai_auth_reject_quota_plans[n], '')`（SR 数组下标从 1 开始，越界返回 NULL） |
 | 限流命中计数 | `ARRAY_SIZE(ai_rate_limit_hits) > 0` | `array_length(CAST(parse_json(ai_rate_limit_hits) AS ARRAY<STRUCT<...>>)) > 0`——SR 无 `array_size`（等价函数 `array_length`）；且 `ai_rate_limit_hits` 在 SR 侧为 VARCHAR（JSON 文本，见 §2.2），MV 内 parse_json 还原后取长度（3.5.21 实测口径等价） |
 | 错误/认证拒绝计数 | `SUM(CASE WHEN col != '' AND col IS NOT NULL THEN 1 ELSE 0 END)` | 同 |
+| TTFT/TPOT 累计 | `SUM(CASE WHEN COALESCE(ai_stream,0)=1 THEN COALESCE(ai_ttft_us/ai_tpot_us,0) ELSE 0 END)`（**仅流式行**，ai-gateway-api issue #315；非流式行 `ai_ttft_us` 可非 0 但不计入） | 同 |
 | 分钟桶 | `DATE_TRUNC(log_time, 'minute')` | `date_trunc('minute', log_time)` |
 | NULL 兜底 | `COALESCE(维度, ''/0)` | 同 |
 

@@ -251,8 +251,8 @@
 | `total_tokens` | BIGINT SUM | 总 Token 累计 | 个 |
 | `cache_read_tokens` | BIGINT SUM | 缓存读取 Token 累计 | 个 |
 | `cache_write_tokens` | BIGINT SUM | 缓存写入 Token 累计 | 个 |
-| `ttft_us_sum` | BIGINT SUM | TTFT 累计 | 微秒 |
-| `tpot_us_sum` | BIGINT SUM | TPOT 累计 | 微秒 |
+| `ttft_us_sum` | BIGINT SUM | TTFT 累计（**仅 `ai_stream=1` 行**，ai-gateway-api issue #315；非流式行的 `ai_ttft_us` 可非 0 但不计入） | 微秒 |
+| `tpot_us_sum` | BIGINT SUM | TPOT 累计（**仅 `ai_stream=1` 行**，同上） | 微秒 |
 | `req_header_bytes` | BIGINT SUM | 请求头字节累计 | 字节 |
 | `req_body_bytes` | BIGINT SUM | 请求体字节累计 | 字节 |
 | `res_header_bytes` | BIGINT SUM | 响应头字节累计 | 字节 |
@@ -287,6 +287,7 @@ INSERT JOB 每分钟执行，逻辑如下（关键映射）：
 | `request_count` | `COUNT(1)` |
 | `error_count` | `SUM(err_code 非空 ? 1 : 0)` |
 | `auth_reject_count` | `SUM(ai_auth_reject_reason 非空 ? 1 : 0)` |
+| `ttft_us_sum` / `tpot_us_sum` | `SUM(CASE WHEN COALESCE(ai_stream,0)=1 THEN COALESCE(ai_ttft_us/ai_tpot_us,0) ELSE 0 END)`（**仅流式行**，ai-gateway-api issue #315；非流式行 `ai_ttft_us` 可非 0 但不计入） |
 | 其余 `*_sum` / `*_tokens` | `SUM(COALESCE(明细字段, 0))` |
 
 > 注意：`rate_limit_hits` 是「命中限流的请求数」（`ARRAY_SIZE(ai_rate_limit_hits) > 0`），而非命中的规则条数。
@@ -333,9 +334,11 @@ WHERE $__timeFilter(ts_min)
 GROUP BY ts_min ORDER BY ts_min;
 
 -- 4) 平均 TTFT（微秒）/ TPOT（微秒）/ 总耗时（毫秒）
+-- ttft/tpot 为流式口径（issue #315）：分子（列本身已仅流式行贡献）与分母
+-- 都只含 ai_stream=1 行；平均延迟为全量口径，分母仍用 request_count。
 SELECT ts_min AS time,
-       SUM(ttft_us_sum)  / NULLIF(SUM(request_count),0) AS avg_ttft_us,
-       SUM(tpot_us_sum)  / NULLIF(SUM(request_count),0) AS avg_tpot_us,
+       SUM(ttft_us_sum)  / NULLIF(SUM(CASE WHEN ai_stream=1 THEN request_count ELSE 0 END),0) AS avg_ttft_us,
+       SUM(tpot_us_sum)  / NULLIF(SUM(CASE WHEN ai_stream=1 THEN request_count ELSE 0 END),0) AS avg_tpot_us,
        SUM(all_time_sum) / NULLIF(SUM(request_count),0) AS avg_latency_ms
 FROM bfe_ai_metrics_1m
 WHERE $__timeFilter(ts_min)

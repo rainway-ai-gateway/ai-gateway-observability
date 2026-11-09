@@ -526,6 +526,9 @@ func assertMergeStable(t *testing.T, db *sql.DB, dbName, tsMin string) {
 
 // aggTotalsWant 为整窗指标期望值（三行样例合计：request=3、error=2（rate_limit+auth_reject）、
 // auth_reject=1、input/output/total=95/173/207、rate_limit_hits=1、缓存读写 token 均为 0）。
+// ttft/tpot 期望 0：三行样例均为非流式（未写 ai_stream），normal 行虽携带
+// ai_ttft_us=6287/ai_tpot_us=3，但流式口径累计不得计入（ai-gateway-api issue #315，
+// 该断言同时钉死 MV 的 sumIf(ai_ttft_us, ai_stream=1) 口径）。
 var aggTotalsWant = map[string]string{
 	"request_count":      "3",
 	"error_count":        "2",
@@ -536,13 +539,16 @@ var aggTotalsWant = map[string]string{
 	"rate_limit_hits":    "1",
 	"cache_read_tokens":  "0",
 	"cache_write_tokens": "0",
+	"ttft_us_sum":        "0",
+	"tpot_us_sum":        "0",
 }
 
 // aggTotals 返回 ts_min 桶的整窗 sum() 指标（GROUP BY ts_min 兜底）。
 func aggTotals(t *testing.T, db *sql.DB, dbName, tsMin string) map[string]string {
 	t.Helper()
 	keys := []string{"request_count", "error_count", "auth_reject_count", "input_tokens",
-		"output_tokens", "total_tokens", "rate_limit_hits", "cache_read_tokens", "cache_write_tokens"}
+		"output_tokens", "total_tokens", "rate_limit_hits", "cache_read_tokens", "cache_write_tokens",
+		"ttft_us_sum", "tpot_us_sum"}
 	sums := make([]string, len(keys))
 	for i, k := range keys {
 		sums[i] = "toString(sum(" + k + "))"
