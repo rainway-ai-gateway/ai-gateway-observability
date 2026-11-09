@@ -33,7 +33,7 @@ STARROCKS01 StarRocks 对接（报表存储新引擎）
 3. 重建：`DROP MATERIALIZED VIEW bfe_ai_metrics_1m`（cleanup.sh 逆序：MV 先于明细表删除），断言 `SHOW MATERIALIZED VIEWS` 中不再可见；
 4. 按仓库 DDL 重新执行 `bfe_ai_metrics_1m.sql`，断言 MV 存在且 `is_active=true`；
 5. **自动回填**：轮询至 MV 该桶 `SUM(request_count)=3`（新建异步 MV 的初始刷新会从基表全量计算历史分区，即 SR 侧的"重算"，无需手工 INSERT..SELECT）；
-6. 重跑 `assertAggregation`：整窗 9 指标与 40 维关键子集分布与重建前逐项一致；
+6. 重跑 `assertAggregation`：整窗 11 指标与 40 维关键子集分布与重建前逐项一致；
 7. `t.Cleanup` 删除测试库。
 
 ## 预期结果

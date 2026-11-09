@@ -291,8 +291,8 @@
 | `input_tokens` | 输入 Token 累计 | 个 |
 | `output_tokens` | 输出 Token 累计 | 个 |
 | `total_tokens` | 总 Token 累计 | 个 |
-| `ttft_us_sum` | TTFT 累计 | 微秒 |
-| `tpot_us_sum` | TPOT 累计 | 微秒 |
+| `ttft_us_sum` | TTFT 累计（**仅 `ai_stream=1` 行**，ai-gateway-api issue #315） | 微秒 |
+| `tpot_us_sum` | TPOT 累计（**仅 `ai_stream=1` 行**，同上） | 微秒 |
 | `req_header_bytes` | 请求头字节累计 | 字节 |
 | `req_body_bytes` | 请求体字节累计 | 字节 |
 | `res_header_bytes` | 响应头字节累计 | 字节 |
@@ -350,7 +350,8 @@ GROUP BY /* ... 全 40 维 ... */;
 | `error_count` | `sum(toInt64(err_code != ''))` | `SUM(err_code 非空 ? 1 : 0)` |
 | `auth_reject_count` | `sum(toInt64(ai_auth_reject_reason != ''))` | `SUM(ai_auth_reject_reason 非空 ? 1 : 0)` |
 | `rate_limit_hits` | `sum(toInt64(length(ai_rate_limit_hits) > 0))` | `SUM(ARRAY_SIZE(ai_rate_limit_hits) > 0)`（命中限流的请求数，非规则条数） |
-| 其余 SUM 指标（tokens、耗时、字节、重试、成本、音视频、图片等） | `sum(<明细列>)`（明细列非空，等价 Doris COALESCE 归一） | `SUM(COALESCE(明细字段, 0))` |
+| `ttft_us_sum` / `tpot_us_sum` | `sumIf(ai_ttft_us / ai_tpot_us, ai_stream = 1)`（**仅流式行**，ai-gateway-api issue #315） | `SUM(CASE WHEN ai_stream=1 THEN COALESCE(明细字段,0) ELSE 0 END)` |
+| 其余 15 个 SUM 指标（tokens、耗时、字节、重试、成本、音视频、图片等） | `sum(<明细列>)`（明细列非空，等价 Doris COALESCE 归一） | `SUM(COALESCE(明细字段, 0))` |
 
 ---
 
@@ -390,9 +391,11 @@ WHERE ts_min >= toDateTime('2026-10-01 00:00:00', 'UTC')
 GROUP BY ts_min ORDER BY ts_min;
 
 -- 4) 平均 TTFT（微秒）/ TPOT（微秒）/ 总耗时（毫秒）
+-- ttft/tpot 为流式口径（issue #315）：分子（列本身已仅流式行贡献）与分母
+-- 都只含 ai_stream=1 行；平均延迟为全量口径，分母仍用 request_count。
 SELECT ts_min,
-       sum(ttft_us_sum)  / sum(request_count) AS avg_ttft_us,
-       sum(tpot_us_sum)  / sum(request_count) AS avg_tpot_us,
+       sum(ttft_us_sum)  / sumIf(request_count, ai_stream = 1) AS avg_ttft_us,
+       sum(tpot_us_sum)  / sumIf(request_count, ai_stream = 1) AS avg_tpot_us,
        sum(all_time_sum) / sum(request_count) AS avg_latency_ms
 FROM bfe_ai_metrics_1m
 WHERE ts_min >= toDateTime('2026-10-01 00:00:00', 'UTC')
