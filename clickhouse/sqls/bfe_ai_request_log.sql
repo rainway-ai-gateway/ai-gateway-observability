@@ -137,7 +137,11 @@ CREATE TABLE IF NOT EXISTS ${CLICKHOUSE_DATABASE}.bfe_ai_request_log
     `ai_intent_source`        String            DEFAULT '' COMMENT '意图来源：explicit_header/classifier/cache',
     `ai_intent_latency_us`    Nullable(Int64)            COMMENT '意图决策耗时（微秒，NULL=未分类）',
     `ai_intent_cache_hit`     Nullable(UInt8)            COMMENT '意图缓存命中（NULL=未分类，0/1）',
-    `ai_intent_questions_version` String        DEFAULT '' COMMENT '意图问题集版本'
+    `ai_intent_questions_version` String        DEFAULT '' COMMENT '意图问题集版本',
+
+    -- AI 可观测 — 缺价信号（bfe#1479）
+    `ai_price_miss`           Nullable(UInt8)            COMMENT '是否发生缺价回退（NULL=未上报，0/1）',
+    `ai_price_warn`           Nullable(String)           COMMENT '缺价形态：fallback/subitem_missing/no_entry/no_baseline/no_model_table/reject（NULL=未上报）'
 )
 ENGINE = MergeTree
 PARTITION BY toDate(log_time)

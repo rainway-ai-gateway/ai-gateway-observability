@@ -82,6 +82,6 @@ TC02 行为要点（详见 [TC-02 文档](./测试设计文档/scenario-CLICKHOU
 
 | 场景 | 说明 |
 |------|------|
-| CLICKHOUSE01 ClickHouse 对接 | 基于真实 SQL 资产验证 v0.8 ClickHouse 侧落地：全新安装六步建 5 对象且幂等；真实 Kafka 消费打平（level 十列、限流三列、UTC 墙钟、UInt64 logid 原值、Nullable 语义）；明细→聚合 40 维 + 24 指标关键子集口径（GROUP BY + sum() 兜底范式）；存量升级 ALTER（加列成功、聚合表不自动携带新列的行为记录）；聚合表重建（DROP MV+表 → 按仓库 DDL 重建 → INSERT..SELECT 明细重算，口径不变） |
+| CLICKHOUSE01 ClickHouse 对接 | 基于真实 SQL 资产验证 v0.8 ClickHouse 侧落地：全新安装六步建 5 对象且幂等（含缺价信号两列 `Nullable(UInt8)`/`Nullable(String)`）；真实 Kafka 消费打平（level 十列、限流三列、UTC 墙钟、UInt64 logid 原值、Nullable 语义、缺价信号取值与 NULL）；明细→聚合 40 维 + 24 指标关键子集口径（GROUP BY + sum() 兜底范式）；存量升级 ALTER（加列成功、聚合表不自动携带新列的行为记录）；聚合表重建（DROP MV+表 → 按仓库 DDL 重建 → INSERT..SELECT 明细重算，口径不变）；缺价信号存量升级（TC06：Kafka 引擎表不能 ALTER 的负向断言 + 升级脚本 + MV 重建） |
 
 详细用例设计见 [测试设计文档](./测试设计文档/scenario-CLICKHOUSE01-clickhouse对接/场景说明.md)。

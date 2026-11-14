@@ -1,5 +1,5 @@
 -- ============================================================
--- Kafka 引擎暂存表：schema 与 mod_kafka 输出的 JSON 消息同构（80 字段）
+-- Kafka 引擎暂存表：schema 与 mod_kafka 输出的 JSON 消息同构（82 字段）
 -- 设计依据：clickhouse/docs/modifications/2026-10-01-clickhouse-dock/design-changes.md
 -- ============================================================
 -- 机制说明（等价 Doris Routine Load 的 Kafka 消费端）：
@@ -103,7 +103,9 @@ CREATE TABLE IF NOT EXISTS ${CLICKHOUSE_DATABASE}.bfe_ai_log_kafka
     `ai_intent_source`        String,
     `ai_intent_latency_us`    Nullable(Int64),
     `ai_intent_cache_hit`     Nullable(UInt8),
-    `ai_intent_questions_version` String
+    `ai_intent_questions_version` String,
+    `ai_price_miss`           Nullable(UInt8)  COMMENT '是否发生缺价回退（NULL=未上报，0/1）',
+    `ai_price_warn`           Nullable(String) COMMENT '缺价形态（NULL=未上报）'
 )
 ENGINE = Kafka
 SETTINGS

@@ -53,6 +53,6 @@ go test ./implementation/scenario-DORIS01-report-cache-mirror-intent/ -run TestT
 
 | 场景 | 说明 |
 |------|------|
-| DORIS01 报表二期缓存/镜像/意图字段 | 基于真实 SQL 资产验证 v0.8 二期 Doris 侧改动：全新安装 schema（明细表 +13 列、聚合表 40 维、INSERT JOB，Doris 创建 JOB 时即校验 DO 语句）、Routine Load 映射被 Doris 接受（含限流打平列 json_extract）、明细→聚合口径（含空值归一）、存量升级 ALTER（每环境一次，重复执行报 Duplicate column）、聚合表 `_v2`+`REPLACE WITH TABLE` 原子换名重建流程 |
+| DORIS01 报表二期缓存/镜像/意图字段 | 基于真实 SQL 资产验证 v0.8 二期 Doris 侧改动：全新安装 schema（明细表 +13 列、聚合表 40 维、INSERT JOB，Doris 创建 JOB 时即校验 DO 语句）、Routine Load 映射被 Doris 接受（含限流打平列 json_extract）、明细→聚合口径（含空值归一）、存量升级 ALTER（每环境一次，重复执行报 Duplicate column）、聚合表 `_v2`+`REPLACE WITH TABLE` 原子换名重建流程、缺价信号两列（`ai_price_miss` BOOLEAN / `ai_price_warn` VARCHAR(32)，bfe#1479）与新增的升级 ALTER（TC07） |
 
 详细用例设计见 [测试设计文档](./测试设计文档/scenario-DORIS01-报表缓存镜像意图字段/场景说明.md)。

@@ -44,6 +44,12 @@ var newDetailColumns = map[string]string{
 	"ai_intent_questions_version": "varchar(32)",
 }
 
+// priceMissColumns 缺价信号两列（bfe#1479）。Doris information_schema 把 BOOLEAN 报告为 tinyint。
+var priceMissColumns = map[string]string{
+	"ai_price_miss": "tinyint",
+	"ai_price_warn": "varchar(32)",
+}
+
 // flattenColumns 限流首个命中打平列（Routine Load 导入时 json_extract 提取，JOB 直接消费）。
 var flattenColumns = map[string]string{
 	"rate_limit_policy_id": "varchar(128)",
@@ -67,8 +73,8 @@ func TestTC01FreshInstallSchema(t *testing.T) {
 	dbName := common.NewTestDB(t, db, vars)
 	common.SetupFreshInstall(t, db, dbName, vars, true /*withJob*/)
 
-	// 1) 明细表新增 10 列 + 限流打平 3 列存在且类型正确
-	for _, cols := range []map[string]string{newDetailColumns, flattenColumns} {
+	// 1) 明细表新增 10 列 + 限流打平 3 列 + 缺价信号 2 列存在且类型正确（bfe#1479）
+	for _, cols := range []map[string]string{newDetailColumns, flattenColumns, priceMissColumns} {
 		got := common.ColumnTypes(t, db, dbName, "bfe_ai_request_log", colNames(cols))
 		for col, wantType := range cols {
 			gotType, ok := got[col]
@@ -121,9 +127,9 @@ func TestTC02RoutineLoadAccepted(t *testing.T) {
 		t.Fatalf("Routine Load 创建失败，SHOW ROUTINE LOAD 输出:\n%s", out)
 	}
 
-	// COLUMNS 映射含新增 10 列 + 限流打平 3 列
+	// COLUMNS 映射含新增 10 列 + 限流打平 3 列 + 缺价信号 2 列
 	createSQL := common.QueryText(t, db, dbName, "SHOW CREATE ROUTINE LOAD FOR bfe_ai_log_load")
-	for _, cols := range []map[string]string{newDetailColumns, flattenColumns} {
+	for _, cols := range []map[string]string{newDetailColumns, flattenColumns, priceMissColumns} {
 		for col := range cols {
 			if !strings.Contains(createSQL, col) {
 				t.Errorf("Routine Load COLUMNS 缺少新列 %s", col)
@@ -336,6 +342,87 @@ func TestTC05MetricsRebuildSwap(t *testing.T) {
 
 	// 5) 删除旧表（换名后即为 _v2）
 	common.ExecIn(t, db, dbName, "DROP TABLE bfe_ai_metrics_1m_v2")
+}
+
+// TestTC07PriceMissUpgrade 缺价信号存量升级（bfe#1479）：DROP 两列模拟旧表 → 执行升级 ALTER
+// → 列就位（类型正确）+ 明细取值/NULL 语义 → 二次执行报 Duplicate column（每环境一次契约）。
+func TestTC07PriceMissUpgrade(t *testing.T) {
+	db := common.TestDB(t)
+	vars := common.DefaultVars(common.UniqueDBName(t))
+	dbName := common.NewTestDB(t, db, vars)
+	common.SetupFreshInstall(t, db, dbName, vars, false /*withJob*/)
+
+	cols := colNames(priceMissColumns)
+
+	// 1) 旧表模拟：DROP 两列
+	common.ExecIn(t, db, dbName,
+		"ALTER TABLE bfe_ai_request_log DROP COLUMN ai_price_miss, DROP COLUMN ai_price_warn")
+	if got := common.ColumnTypes(t, db, dbName, "bfe_ai_request_log", cols); len(got) != 0 {
+		t.Fatalf("旧表模拟失败，仍存在新列: %v", got)
+	}
+
+	// 2) 执行升级 ALTER → 两列就位且类型正确
+	alterFile := common.SQLPath(t, "upgrade", "2026-10-30-issue-1479-price-miss-columns", "bfe_ai_request_log_alter.sql")
+	common.ExecFileIn(t, db, dbName, alterFile, vars)
+	got := common.ColumnTypes(t, db, dbName, "bfe_ai_request_log", cols)
+	for col, wantType := range priceMissColumns {
+		if got[col] != wantType {
+			t.Errorf("升级后列 %s 类型 = %q，期望 %q", col, got[col], wantType)
+		}
+	}
+
+	// 3) 明细取值与 NULL 语义：带信号行落 1/'subitem_missing'，旧消息行两列为 NULL
+	ts := time.Now().Add(-2 * time.Minute).Truncate(time.Minute)
+	common.ExecIn(t, db, dbName, fmt.Sprintf(`INSERT INTO bfe_ai_request_log
+    (hostid, log_time, ai_apikey_id, ai_requested_model, logid, product, ai_price_miss, ai_price_warn)
+VALUES
+    ('it_host', '%s', 'it_key', 'it_model', 7001, 'it_product', 1, 'subitem_missing'),
+    ('it_host', '%s', 'it_key', 'it_model', 7002, 'it_product', NULL, NULL)`,
+		ts.Add(10*time.Second).Format("2006-01-02 15:04:05"),
+		ts.Add(20*time.Second).Format("2006-01-02 15:04:05")))
+
+	rows, err := db.Query(fmt.Sprintf(
+		`SELECT logid, ai_price_miss, ai_price_warn FROM %s.bfe_ai_request_log
+WHERE logid IN (7001, 7002) ORDER BY logid`, dbName))
+	if err != nil {
+		t.Fatalf("查询明细表失败: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var logid int64
+		var miss sql.NullInt64
+		var warn sql.NullString
+		if err := rows.Scan(&logid, &miss, &warn); err != nil {
+			t.Fatalf("扫描明细行失败: %v", err)
+		}
+		switch logid {
+		case 7001:
+			if !miss.Valid || miss.Int64 != 1 {
+				t.Errorf("logid=7001 ai_price_miss = %+v，期望 1", miss)
+			}
+			if !warn.Valid || warn.String != "subitem_missing" {
+				t.Errorf("logid=7001 ai_price_warn = %+v，期望 subitem_missing", warn)
+			}
+		case 7002:
+			if miss.Valid || warn.Valid {
+				t.Errorf("logid=7002 两列应为 NULL，实际 ai_price_miss=%+v ai_price_warn=%+v", miss, warn)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("遍历明细行失败: %v", err)
+	}
+
+	// 4) 第二次执行 → 报 Duplicate column（每环境仅一次契约，与 ClickHouse 的 IF NOT EXISTS 幂等不同）
+	content := "USE " + dbName + ";\n" + common.LoadSQL(t, alterFile, vars)
+	if _, err := db.Exec(content); err == nil {
+		t.Errorf("重复执行升级 ALTER 未报错，期望 column already exists（每环境仅执行一次）")
+	} else {
+		msg := strings.ToLower(err.Error())
+		if !strings.Contains(msg, "already exists") && !strings.Contains(msg, "duplicate") {
+			t.Errorf("重复执行升级 ALTER 的报错不符合预期: %v", err)
+		}
+	}
 }
 
 // TestTC06DetailUniqueKeyRebuild 明细表唯一键重建（HOWTO §11.5，bfe#1417）：

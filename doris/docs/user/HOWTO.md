@@ -231,6 +231,7 @@ Doris 对象创建完成后，在 Grafana 中添加 **MySQL 数据源**连接 Do
 | 2 | Routine Load 映射 +10 列 | 停止后按新映射重建任务 | 同名任务进度保留，从上次提交位点续传 |
 | 3 | 聚合表 +3 KEY 维度（`ai_cache_status`、`mirror_hit`、`ai_intent_answer`） | AGGREGATE KEY 只能整表重建（`_v2` + `SWAP` 原子换名） | 需低峰窗口执行；分钟表允许 ≤1 分钟空洞 |
 | 4 | 明细表唯一键补请求级判别列 `logid`（bfe#1417） | **整表重建**（`_v2` + 回灌 + `SWAP` 换名，每环境执行一次） | 需低峰窗口；Routine Load 短暂 PAUSE 后 RESUME（映射不变） |
+| 5 | 明细表 +2 列（缺价信号 `ai_price_miss` / `ai_price_warn`，bfe#1479） | 在线 `ALTER` + 重建 Routine Load（映射 +2 列） | 见 §11.6；不阻塞读写，RL 重建秒级 |
 
 > **不追溯存量数据**：Routine Load 新列从映射上线后到达的消息起积累；聚合表新维度从切换时刻起积累（分钟表不回溯，同一期 MySQL 链路既定口径）。如需历史窗口立即可下钻，见步骤 3.2 的可选重算。
 
@@ -386,6 +387,27 @@ DROP TABLE bfe_ai_request_log_v2;
 ```
 
 > **不追溯存量数据**：存量行 `logid` 为 0（BFE 历史上从未写出非 0 值），重建后仍为 0——它们在先前的四列键下已互相合并，属历史事实，不可回溯。修复后的新行（BFE 侧已保证 `logid` 唯一非 0）各自成行。
+
+### 11.6 缺价信号两列（bfe#1479）
+
+模型缺少某接口定价时，BFE 会把"回退/零计费/拒绝"的缺价事实写到 `ai_price_miss`（`1` 发生 / `0` 显式未发生 / **NULL 未上报**）与 `ai_price_warn`（`fallback` / `subitem_missing` / `no_entry` / `no_baseline` / `no_model_table` / `reject`）。设计见 [2026-10-30-issue-1479-price-miss-columns](../modifications/2026-10-30-issue-1479-price-miss-columns/design-changes.md)。
+
+```bash
+cd /path/to/ai-gateway-observability/doris
+source setup.conf
+
+# 1) 明细表加两列（每环境一次；Doris 3.0 不支持 ADD COLUMN IF NOT EXISTS，
+#    重复执行报 "Can not add column which already exists" 属预期）
+sed -e 's|\${DORIS_DATABASE}|'"${DORIS_DATABASE}"'|g' sqls/upgrade/2026-10-30-issue-1479-price-miss-columns/bfe_ai_request_log_alter.sql | mysql -h${DORIS_HOST} -P${DORIS_PORT} -u${DORIS_USER}
+
+# 2) 重建 Routine Load（COLUMNS 扩 2 列，映射不变的部分原样保留）
+mysql -h${DORIS_HOST} -P${DORIS_PORT} -u${DORIS_USER} -e "STOP ROUTINE LOAD FOR bfe_ai_log_load; DROP ROUTINE LOAD FOR bfe_ai_log_load;"
+#    再按 §11.2 的变量替换方式执行新版 sqls/bfe_ai_log_load_routine.sql
+```
+
+> **顺序不可颠倒**：先加列、再重建 RL；反之 job 创建即报表上无对应列。`ai_price_miss` 必须是 `BOOLEAN`（JSON `true/false` 只在 `BOOLEAN` 目标列上转 `1/0`；StarRocks 侧声明成 `TINYINT` 会静默落 NULL，见 `starrocks` 的 issue #10）。
+>
+> **历史数据不追溯**：升级前入库的行两列为 NULL（= 未上报），统计缺价率时按升级时间点切分窗口。
 
 ## 12. 文档更新历史
 
